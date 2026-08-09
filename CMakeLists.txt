@@ -9,7 +9,8 @@
 # the Free Software Foundation, either version 3 of the License, or
 # (at your option) any later version.
 
-cmake_minimum_required(VERSION 3.13)
+# Must be at least the release that accepts the CMAKE_CXX_STANDARD set below
+cmake_minimum_required(VERSION 3.20)
 
 # Prevent in-source builds
 if(CMAKE_SOURCE_DIR STREQUAL CMAKE_BINARY_DIR)
@@ -22,7 +23,7 @@ endif()
 project(SuperTux-Wii VERSION 0.1.4 LANGUAGES C CXX)
 
 # Full version string including platform suffix
-set(FULL_VERSION "${PROJECT_VERSION}-wii-d.05")
+set(FULL_VERSION "${PROJECT_VERSION}-wii-d.06")
 set(VERSION ${FULL_VERSION})  # For config.h substitution
 
 # Build Type Configuration (Default to Release)
@@ -38,30 +39,50 @@ else()
   message(WARNING "Strip tool not found. Release binaries will not be stripped.")
 endif()
 
-# Enforce C++20
-set(CMAKE_CXX_STANDARD 20)
+# Enforce C++23
+set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS ON)
 
-# Detect Wii or Vita build
+# Minimum compiler versions for the standard selected above
+# taken from CMake's own Compiler/GNU.cmake and Compiler/Clang.cmake
+set(MIN_GCC_VERSION 11.1)
+set(MIN_CLANG_VERSION 13.0)
+
+if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND CMAKE_CXX_COMPILER_VERSION VERSION_LESS ${MIN_GCC_VERSION})
+  message(WARNING "GCC ${CMAKE_CXX_COMPILER_VERSION} is older than recommended C++${CMAKE_CXX_STANDARD} floor (GCC ${MIN_GCC_VERSION}).")
+elseif(CMAKE_CXX_COMPILER_ID MATCHES "Clang" AND CMAKE_CXX_COMPILER_VERSION VERSION_LESS ${MIN_CLANG_VERSION})
+  message(WARNING "Clang ${CMAKE_CXX_COMPILER_VERSION} is older than recommended C++${CMAKE_CXX_STANDARD} floor (Clang ${MIN_CLANG_VERSION}).")
+endif()
+
+# Detect Wii, Vita, or PS3 build
 if(CMAKE_SYSTEM_NAME STREQUAL "NintendoWii")
   set(ENABLE_WII ON)
   set(ENABLE_VITA OFF)
+  set(ENABLE_PS3 OFF)
   message(STATUS "Configuring for Nintendo Wii")
   add_compile_definitions(__WII__ GEKKO)
 elseif(VITA)
   set(ENABLE_WII OFF)
   set(ENABLE_VITA ON)
+  set(ENABLE_PS3 OFF)
   message(STATUS "Configuring for PlayStation Vita")
   add_compile_definitions(__VITA__)
+elseif(CMAKE_SYSTEM_NAME STREQUAL "Generic" OR DEFINED ENV{PSL1GHT} OR DEFINED ENV{PS3DEV})
+  set(ENABLE_WII OFF)
+  set(ENABLE_VITA OFF)
+  set(ENABLE_PS3 ON)
+  message(STATUS "Configuring for PlayStation 3")
+  add_compile_definitions(__PS3__)
 else()
   set(ENABLE_WII OFF)
   set(ENABLE_VITA OFF)
+  set(ENABLE_PS3 OFF)
 endif()
 
 # Cross-compilation safety check
-if(CMAKE_CROSSCOMPILING AND NOT ENABLE_WII AND NOT ENABLE_VITA)
-  message(WARNING "Cross-compiling detected but not for Wii or Vita. "
+if(CMAKE_CROSSCOMPILING AND NOT ENABLE_WII AND NOT ENABLE_VITA AND NOT ENABLE_PS3)
+  message(WARNING "Cross-compiling detected but not for Wii, Vita, or PS3. "
                   "If this is unintentional, please check your toolchain file.")
 endif()
 
@@ -94,6 +115,24 @@ option(WARNINGS "Enable extra compiler warnings (-Wall -Wextra)" ON)
 if(WARNINGS)
   add_compile_options(-Wall -Wextra)
 endif()
+
+# Build Type Options
+# Shared by both targets so the desktop and Wii builds cannot drift apart.
+# Listed in full rather than relying on CMake's per build type defaults,
+# which a toolchain file is free to override.
+# Each flag needs its own generator expression: add_compile_options splits
+# arguments on spaces, so a grouped $<$<CONFIG:Debug>:-g -O0> is emitted
+# literally and leaks Debug flags into Release.
+add_compile_options(
+  $<$<CONFIG:Debug>:-g>
+  $<$<CONFIG:Debug>:-O0>
+  $<$<CONFIG:Debug>:-DDEBUG>
+  $<$<CONFIG:Release>:-O3>
+  $<$<CONFIG:Release>:-flto>
+)
+add_link_options(
+  $<$<CONFIG:Release>:-flto>
+)
 
 # Add module path for custom Find modules, toolchains, and platform files
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/cmake/modules")
@@ -211,16 +250,9 @@ if(ENABLE_WII)
     )
   endif()
 
-  # Compile options
-  target_compile_options(${PROJECT_NAME}.elf PRIVATE
-    $<$<CONFIG:Debug>:-g -O0 -DDEBUG>
-    $<$<CONFIG:Release>:-O3 -flto>
-  )
-
-  # Link options
+  # Link options (build type flags come from the shared block near the top)
   target_link_options(${PROJECT_NAME}.elf PRIVATE
     -Wl,-Map,${CMAKE_PROJECT_NAME}.map
-    $<$<CONFIG:Release>:-flto>
   )
 
   # Post-build: Strip the ELF binary (Release builds only)
@@ -346,6 +378,93 @@ elseif(ENABLE_VITA)
     FILE sce_sys/livearea/contents/startup.png sce_sys/livearea/contents/startup.png
     FILE sce_sys/livearea/contents/template.xml sce_sys/livearea/contents/template.xml
     FILE ${CMAKE_SOURCE_DIR}/data data
+  )
+
+elseif(ENABLE_PS3)
+  # ============================================================================
+  # PlayStation 3 Build using PSL1GHT
+  # ============================================================================
+  
+  # Fetch and build physfs statically since it is not included in the PS3 dev image
+  include(FetchContent)
+  set(PHYSFS_BUILD_CLI OFF CACHE BOOL "" FORCE)
+  set(PHYSFS_BUILD_TEST OFF CACHE BOOL "" FORCE)
+  set(PHYSFS_BUILD_SHARED OFF CACHE BOOL "" FORCE)
+  set(PHYSFS_BUILD_STATIC ON CACHE BOOL "" FORCE)
+  
+  FetchContent_Declare(
+    physfs
+    URL https://github.com/icculus/physfs/archive/refs/tags/release-3.0.2.zip
+  )
+  FetchContent_MakeAvailable(physfs)
+  if(TARGET physfs-static)
+    target_compile_definitions(physfs-static PRIVATE __unix__ _POSIX_THREADS)
+  endif()
+
+  # OpenGL is disabled for PS3 in favor of hardware-accelerated SDL_Renderer
+  add_definitions(-DNOOPENGL)
+  set(RENDERER_STATUS "Software (SDL2_PSL1GHT - RSX Accelerated)")
+
+  add_executable(${PROJECT_NAME}.elf ${SOURCES} ${HEADERS})
+
+  target_include_directories(${PROJECT_NAME}.elf PRIVATE
+    ${CMAKE_BINARY_DIR}  # For config.h
+    ${CMAKE_SOURCE_DIR}/src
+    $ENV{PS3DEV}/ppu/include
+    $ENV{PS3DEV}/portlibs/ppu/include
+    $ENV{PS3DEV}/portlibs/ppu/include/SDL2
+  )
+
+  target_link_directories(${PROJECT_NAME}.elf PRIVATE
+    $ENV{PS3DEV}/ppu/lib
+    $ENV{PS3DEV}/portlibs/ppu/lib
+  )
+
+  target_link_libraries(${PROJECT_NAME}.elf PRIVATE
+    SDL2_image
+    SDL2_mixer
+    SDL2
+    physfs-static
+    png
+    jpeg
+    z
+    m
+    pthread
+    # PSL1GHT stubs
+    io
+    lv2
+    rt
+    audio
+    rsx
+    sysutil
+    gcm_sys
+  )
+
+  # Post-build: Strip ELF and convert to SELF (eboot.bin)
+  if(CMAKE_STRIP)
+    add_custom_command(TARGET ${PROJECT_NAME}.elf POST_BUILD
+      COMMAND ${CMAKE_STRIP} $<TARGET_FILE:${PROJECT_NAME}.elf>
+      COMMENT "Stripping PS3 ELF binary..."
+      VERBATIM
+    )
+  endif()
+
+  add_custom_command(TARGET ${PROJECT_NAME}.elf POST_BUILD
+    COMMAND make_self $<TARGET_FILE:${PROJECT_NAME}.elf> ${CMAKE_CURRENT_BINARY_DIR}/eboot.bin
+    COMMENT "Generating eboot.bin for PS3..."
+    VERBATIM
+  )
+
+  add_custom_command(TARGET ${PROJECT_NAME}.elf POST_BUILD
+    COMMAND rm -rf ${CMAKE_CURRENT_BINARY_DIR}/pkg_dir
+    COMMAND mkdir -p ${CMAKE_CURRENT_BINARY_DIR}/pkg_dir/USRDIR
+    COMMAND python3 /usr/local/ps3dev/bin/sfo.py --fromxml --title "SuperTux Classic" --appid "SUPERTUX1" /usr/local/ps3dev/bin/sfo.xml ${CMAKE_CURRENT_BINARY_DIR}/pkg_dir/PARAM.SFO
+    COMMAND python3 ${CMAKE_SOURCE_DIR}/resize_images.py ${CMAKE_SOURCE_DIR} ${CMAKE_CURRENT_BINARY_DIR}/pkg_dir
+    COMMAND cp ${CMAKE_CURRENT_BINARY_DIR}/eboot.bin ${CMAKE_CURRENT_BINARY_DIR}/pkg_dir/USRDIR/EBOOT.BIN
+    COMMAND cp -r ${CMAKE_SOURCE_DIR}/data ${CMAKE_CURRENT_BINARY_DIR}/pkg_dir/USRDIR/
+    COMMAND python3 /usr/local/ps3dev/bin/pkg.py --contentid UP0001-SUPERTUX1_00-0000000000000000 ${CMAKE_CURRENT_BINARY_DIR}/pkg_dir/ ${CMAKE_CURRENT_BINARY_DIR}/supertux1.pkg
+    COMMENT "Packaging homebrew into supertux1.pkg for PS3..."
+    VERBATIM
   )
 
 else()
