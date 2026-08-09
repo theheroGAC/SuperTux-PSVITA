@@ -44,10 +44,11 @@ public:
   LevelSubset();
   ~LevelSubset();
 
-  void create(std::string_view subset_name);
+  LevelSubset(const LevelSubset&) = delete;
+  LevelSubset& operator=(const LevelSubset&) = delete;
+
   void parse(lisp_object_t* data);
   void load(std::string_view subset);
-  void save();
 };
 
 struct OriginalTileInfo
@@ -95,18 +96,17 @@ public:
   explicit Level(std::string_view filename);
   ~Level();
 
+  Level(const Level&) = delete;
+  Level& operator=(const Level&) = delete;
+
   void init_defaults();
   int load(std::string_view subset, int level);
   int load(std::string_view filename);
   void reload_bricks_and_coins();
-  void save(const std::string& subset, int level);
   void cleanup();
   void load_gfx();
-  void load_image(Surface** ptexture, const std::string& theme, const char* file, bool use_alpha);
-  void change_size(int new_width);
   void change(float x, float y, int tm, unsigned int c);
   void load_song();
-  void free_song();
   MusicRef get_level_music() const;
   MusicRef get_level_music_fast() const;
   unsigned int gettileid(float x, float y) const;

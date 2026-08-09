@@ -17,6 +17,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <algorithm>
+#include <functional>
 #include <string>
 #include <string_view>
 #include "globals.hpp"
@@ -54,8 +55,6 @@ namespace {
 }
 
 World* World::current_ = 0;
-
-World::World() = default;
 
 void World::common_setup()
 {
@@ -111,6 +110,13 @@ void World::apply_bonuses()
 World::~World()
 {
   deactivate_world();
+
+  // Don't leave the static accessor dangling. Guard against a newer
+  // world having already replaced us.
+  if (current_ == this)
+  {
+    current_ = nullptr;
+  }
 }
 
 void World::activate_world()
@@ -165,9 +171,10 @@ void World::activate_bad_guys()
        i != level->badguy_data.end();
        ++i)
   {
-#ifdef DEBUG
-     printf("add bad guy %d\n", i->kind);
-#endif
+     if (verbose)
+     {
+       printf("add bad guy %d\n", i->kind);
+     }
      add_bad_guy(i->x, i->y, i->kind, i->stay_on_platform);
   }
 }
@@ -236,7 +243,7 @@ void World::draw_tile_layer(RenderBatcher* batcher, const unsigned int* tile_dat
 
           float tile_world_x = map_tile_x * (float)TILE_SIZE;
           unsigned int tile_id = tile_data[y * current_width + map_tile_x];
-          Tile::draw(batcher, tile_world_x - scroll_x, y * (float)TILE_SIZE, tile_id);
+          Tile::draw(batcher, tile_world_x, y * (float)TILE_SIZE, tile_id);
         }
       }
     }
@@ -254,12 +261,28 @@ void World::draw_tile_layer(RenderBatcher* batcher, const unsigned int* tile_dat
         {
           float tile_world_x = map_tile_x * (float)TILE_SIZE;
           unsigned int tile_id = tile_data[y * current_width + map_tile_x];
-          Tile::draw(batcher, tile_world_x - scroll_x, y * (float)TILE_SIZE, tile_id);
+          Tile::draw(batcher, tile_world_x, y * (float)TILE_SIZE, tile_id);
         }
       }
     }
   }
 }
+
+namespace {
+
+Sprite* upgrade_sprite(UpgradeKind kind)
+{
+  switch (kind)
+  {
+    case UPGRADE_GROWUP:    return img_growup;
+    case UPGRADE_ICEFLOWER: return img_iceflower;
+    case UPGRADE_HERRING:   return img_star;
+    case UPGRADE_1UP:       return img_1up;
+  }
+  return nullptr;
+}
+
+} // namespace
 
 void World::draw()
 {
@@ -275,12 +298,7 @@ void World::draw()
   draw_tile_layer(batcher, level->bg_tiles.data());
   draw_tile_layer(batcher, level->ia_tiles.data(), true);
 
-#ifndef NOOPENGL
-  if (use_gl)
-  {
-    m_renderBatcher->flush();
-  }
-#endif
+  flush_batch();
 
   for (unsigned int i = 0; i < bouncy_bricks.size(); ++i)
   {
@@ -294,119 +312,20 @@ void World::draw()
 
   tux.draw(batcher);
 
-  // Draw Bullets
-  draw_pooled_objects(bullets, [&](const Bullet& bullet) {
-    if (bullet.base.x >= scroll_x - bullet.base.width && bullet.base.x <= scroll_x + screen->w)
-    {
-      if (batcher)
-      {
-        img_bullet->draw(*batcher, bullet.base.x, bullet.base.y);
-      }
-      else
-      {
-        img_bullet->draw(bullet.base.x, bullet.base.y);
-      }
-    }
-  });
+  draw_bullets(batcher);
+  draw_upgrades(batcher);
+  draw_bouncy_distros(batcher);
+  draw_broken_bricks(batcher);
 
-  // Draw Upgrades
-  draw_pooled_objects(upgrades, [&](const Upgrade& upgrade) {
-    Sprite* sprite_to_draw = nullptr;
-    if (upgrade.kind == UPGRADE_GROWUP)
-    {
-      sprite_to_draw = img_growup;
-    }
-    else if (upgrade.kind == UPGRADE_ICEFLOWER)
-    {
-      sprite_to_draw = img_iceflower;
-    }
-    else if (upgrade.kind == UPGRADE_HERRING)
-    {
-      sprite_to_draw = img_star;
-    }
-    else if (upgrade.kind == UPGRADE_1UP)
-    {
-      sprite_to_draw = img_1up;
-    }
+  flush_batch();
 
-    if (sprite_to_draw)
-    {
-      if (upgrade.base.height < TILE_SIZE)
-      {
-        if (batcher)
-        {
-          sprite_to_draw->draw_part(*batcher, 0, 0, upgrade.base.x, upgrade.base.y + TILE_SIZE - upgrade.base.height, TILE_SIZE, upgrade.base.height);
-        }
-        else
-        {
-          sprite_to_draw->draw_part(0, 0, upgrade.base.x - scroll_x, upgrade.base.y + TILE_SIZE - upgrade.base.height, TILE_SIZE, upgrade.base.height);
-        }
-      }
-      else
-      {
-        if (batcher)
-        {
-          sprite_to_draw->draw(*batcher, upgrade.base.x, upgrade.base.y);
-        }
-        else
-        {
-          sprite_to_draw->draw(upgrade.base.x, upgrade.base.y);
-        }
-      }
-    }
-  });
-
-  // Draw Bouncy Distros
-  draw_pooled_objects(bouncy_distros, [&](const BouncyDistro& distro) {
-    if (batcher)
-    {
-      batcher->add(img_distro[0], distro.base.x, distro.base.y, 0, 0);
-    }
-    else
-    {
-      img_distro[0]->draw(distro.base.x - scroll_x, distro.base.y);
-    }
-  });
-
-  // Draw Broken Bricks
-  draw_pooled_objects(broken_bricks, [&](const BrokenBrick& brick) {
-    if (!brick.tile->images.empty())
-    {
-      if (batcher)
-      {
-        batcher->add_part(brick.tile->images[0], brick.random_offset_x, brick.random_offset_y,
-                          brick.base.x, brick.base.y, 16, 16, 0, 0);
-      }
-      else
-      {
-        brick.tile->images[0]->draw_part(brick.random_offset_x, brick.random_offset_y,
-                                          brick.base.x - scroll_x, brick.base.y, 16, 16);
-      }
-    }
-  });
-
-#ifndef NOOPENGL
-  if (use_gl)
-  {
-    m_renderBatcher->flush();
-  }
-#endif
-
-  // Draw Floating Scores (Text-based, drawn AFTER flush)
-  draw_pooled_objects(floating_scores, [&](const FloatingScore& score) {
-    std::string score_str = std::to_string(score.value);
-    int x_pos = static_cast<int>(score.base.x - scroll_x + 16 - score_str.length() * 8);
-    gold_text->draw(score_str, x_pos, static_cast<int>(score.base.y), 1);
-  });
+  // Scores are text, which the batcher does not carry, so they go out
+  // after the flush.
+  draw_floating_scores();
 
   draw_tile_layer(batcher, level->fg_tiles.data());
 
-#ifndef NOOPENGL
-  if (use_gl)
-  {
-    m_renderBatcher->flush();
-  }
-#endif
+  flush_batch();
 
   for(auto* p : particle_systems)
   {
@@ -420,6 +339,106 @@ void World::draw()
     SurfaceOpenGL::reset_state();
   }
 #endif
+}
+
+/** Hand the batched quads to OpenGL. RenderBatcher::flush() is an empty
+    stub in NOOPENGL builds, so this needs no preprocessor guard. */
+void World::flush_batch()
+{
+  if (use_gl)
+  {
+    m_renderBatcher->flush();
+  }
+}
+
+void World::draw_bullets(RenderBatcher* batcher)
+{
+  draw_pooled_objects(bullets, [&](const Bullet& bullet) {
+    if (bullet.base.x >= scroll_x - bullet.base.width && bullet.base.x <= scroll_x + screen->w)
+    {
+      if (batcher)
+      {
+        img_bullet->draw(*batcher, bullet.base.x, bullet.base.y);
+      }
+      else
+      {
+        img_bullet->draw(bullet.base.x, bullet.base.y);
+      }
+    }
+  });
+}
+
+void World::draw_upgrades(RenderBatcher* batcher)
+{
+  draw_pooled_objects(upgrades, [&](const Upgrade& upgrade) {
+    Sprite* sprite = upgrade_sprite(upgrade.kind);
+    if (!sprite) return;
+
+    // Still rising out of the box: only the emerged strip is drawn.
+    if (upgrade.base.height < TILE_SIZE)
+    {
+      if (batcher)
+      {
+        sprite->draw_part(*batcher, 0, 0, upgrade.base.x, upgrade.base.y + TILE_SIZE - upgrade.base.height, TILE_SIZE, upgrade.base.height);
+      }
+      else
+      {
+        sprite->draw_part(0, 0, upgrade.base.x - scroll_x, upgrade.base.y + TILE_SIZE - upgrade.base.height, TILE_SIZE, upgrade.base.height);
+      }
+    }
+    else
+    {
+      if (batcher)
+      {
+        sprite->draw(*batcher, upgrade.base.x, upgrade.base.y);
+      }
+      else
+      {
+        sprite->draw(upgrade.base.x, upgrade.base.y);
+      }
+    }
+  });
+}
+
+void World::draw_bouncy_distros(RenderBatcher* batcher)
+{
+  draw_pooled_objects(bouncy_distros, [&](const BouncyDistro& distro) {
+    if (batcher)
+    {
+      batcher->add(img_distro[0], distro.base.x, distro.base.y);
+    }
+    else
+    {
+      img_distro[0]->draw(distro.base.x - scroll_x, distro.base.y);
+    }
+  });
+}
+
+void World::draw_broken_bricks(RenderBatcher* batcher)
+{
+  draw_pooled_objects(broken_bricks, [&](const BrokenBrick& brick) {
+    if (brick.tile->images.empty()) return;
+
+    if (batcher)
+    {
+      batcher->add_part(brick.tile->images[0], brick.random_offset_x, brick.random_offset_y,
+                        brick.base.x, brick.base.y, 16, 16);
+    }
+    else
+    {
+      brick.tile->images[0]->draw_part(brick.random_offset_x, brick.random_offset_y,
+                                        brick.base.x - scroll_x, brick.base.y, 16, 16);
+    }
+  });
+}
+
+void World::draw_floating_scores()
+{
+  draw_pooled_objects(floating_scores, [&](const FloatingScore& score) {
+    std::string score_str = std::to_string(score.value);
+    int x_pos = static_cast<int>(score.base.x - scroll_x + 16 - score_str.length() * 8);
+    gold_text->draw(score_str, x_pos, static_cast<int>(score.base.y), 1);
+  });
 }
 
 void World::resolvePlayerPhysics(Player* player)
@@ -523,23 +542,9 @@ void World::cleanup_dead_objects()
     }
   }
 
-  // Use the same safe backward loop for bad_guys.
-  for (size_t i = 0; i < bad_guys.size(); )
-  {
-    if (bad_guys[i]->is_removable())
-    {
-      delete bad_guys[i];
-      bad_guys[i] = bad_guys.back();
-      bad_guys.pop_back();
-    }
-    else
-    {
-      ++i;
-    }
-  }
-
-  // Also clean up the collision lists.
-  // We don't need to delete the objects here, just remove the pointers.
+  // Clean up the non-owning collision lists FIRST, while the pointers they
+  // hold are still valid. The owning bad_guys list is deleted afterwards.
+  // (Pruning after deletion would call is_removable() on freed memory.)
   for (size_t i = 0; i < normal_colliders.size(); )
   {
     if (normal_colliders[i]->is_removable())
@@ -559,6 +564,22 @@ void World::cleanup_dead_objects()
     {
       special_colliders[i] = special_colliders.back();
       special_colliders.pop_back();
+    }
+    else
+    {
+      ++i;
+    }
+  }
+
+  // Now that no other list refers to them, delete the removable bad guys.
+  // The bad_guys list is the sole owner of these objects.
+  for (size_t i = 0; i < bad_guys.size(); )
+  {
+    if (bad_guys[i]->is_removable())
+    {
+      delete bad_guys[i];
+      bad_guys[i] = bad_guys.back();
+      bad_guys.pop_back();
     }
     else
     {
@@ -655,12 +676,75 @@ void World::scrolling(float elapsed_time)
   }
 }
 
+namespace {
+
+/** A Mr. Iceblock in KICK mode is the one bad guy that hunts the others, and
+    both the special collider pass and the normal pass have to recognise it. */
+bool is_kicked_iceblock(const BadGuy* badguy)
+{
+  return badguy->kind == BAD_MRICEBLOCK && badguy->mode == BadGuy::KICK;
+}
+
+/** True when the object sits wholly left or wholly right of the band. */
+bool outside_x_band(const base_type& base, float band_start, float band_end)
+{
+  return base.x + base.width < band_start || base.x > band_end;
+}
+
+/** Tux squishes a bad guy by dropping onto its upper half, unless
+    invincibility is carrying him straight through. */
+bool tux_lands_on(const Player& tux, const BadGuy* badguy)
+{
+  return tux.previous_base.y < tux.base.y &&
+         tux.previous_base.y + tux.previous_base.height <
+           badguy->base.y + (badguy->base.height / 2) &&
+         !tux.invincible_timer.started();
+}
+
+/** The original engine (j = i + 1) processed each unordered pair exactly
+    once. With the grid, the pair (A, B) would otherwise be visited from
+    both sides, and collision responses like direction flips are toggles,
+    so firing twice cancels them out. Process the pair from 'cur' only if
+    'other' won't process it itself: either 'cur' orders first, or 'other'
+    is outside the screen cull and will never take its turn. */
+bool pair_belongs_to(const BadGuy* cur, const BadGuy* other,
+                     float band_start, float band_end)
+{
+  if (other == cur) return false;
+  if (other->dying != DYING_NOT) return false;
+
+  // Kicked ice blocks are special colliders; that pairing is already
+  // handled (unbounded) by the special collider pass.
+  if (is_kicked_iceblock(other)) return false;
+
+  const bool other_is_culled = outside_x_band(other->base, band_start, band_end);
+  return other_is_culled || !std::less<const BadGuy*>{}(other, cur);
+}
+
+} // namespace
+
 void World::collision_handler()
 {
-  // Rebuild spatial grid each frame
+  rebuild_collision_grid();
+
+  collide_bullets_with_badguys();
+  collide_special_colliders();
+  collide_specials_with_each_other();
+  collide_normal_badguys();
+
+  // A dying Tux takes no hits and picks nothing up.
+  if (tux.dying != DYING_NOT) return;
+
+  collide_player_with_badguys();
+  collide_player_with_upgrades();
+}
+
+/** Rebuild the spatial grid from the living bad guys. Bullets and upgrades
+    are never looked up by area, so they are deliberately left out. */
+void World::rebuild_collision_grid()
+{
   m_spatial_grid->clear();
 
-  // Add all active entities to grid
   for (auto* badguy : bad_guys)
   {
     if (badguy->dying == DYING_NOT)
@@ -668,23 +752,10 @@ void World::collision_handler()
       m_spatial_grid->add_badguy(badguy);
     }
   }
+}
 
-  for (size_t index : bullets.get_active_indices())
-  {
-    Bullet* bullet = bullets.get_object_at(index);
-    if (!bullet->removable)
-    {
-      m_spatial_grid->add_bullet(bullet);
-    }
-  }
-
-  for (size_t index : upgrades.get_active_indices())
-  {
-    Upgrade* upgrade = upgrades.get_object_at(index);
-    m_spatial_grid->add_upgrade(upgrade);
-  }
-
-  // Bullet vs BadGuy collisions
+void World::collide_bullets_with_badguys()
+{
   for (size_t index : bullets.get_active_indices())
   {
     Bullet* bullet = bullets.get_object_at(index);
@@ -708,53 +779,69 @@ void World::collision_handler()
       }
     }
   }
+}
 
-  // Special colliders (Mr. Iceblock case)
+void World::collide_special_colliders()
+{
   for (auto* special : special_colliders)
   {
     if (special->dying != DYING_NOT) continue;
 
-    // Mr. Iceblock in KICK mode can hit enemies OFF SCREEN
-    // Use unbounded query (all badguys) to preserve original behavior
-    bool is_kicked_iceblock = (special->kind == BAD_MRICEBLOCK &&
-                               special->mode == BadGuy::KICK);
-
-    if (is_kicked_iceblock)
+    if (is_kicked_iceblock(special))
     {
-      // Check against ALL badguys (original behavior)
-      for (auto* normal : normal_colliders)
-      {
-        if (normal->dying != DYING_NOT) continue;
-
-        if (rectcollision(special->base, normal->base))
-        {
-          normal->collision(special, CO_BADGUY);
-          special->collision(normal, CO_BADGUY);
-        }
-      }
+      collide_kicked_iceblock(special);
     }
     else
     {
-      // Other special colliders use spatial query
-      const auto& nearby = m_spatial_grid->query_badguys(
-        special->base.x - TILE_SIZE, special->base.y - TILE_SIZE,
-        special->base.width + (TILE_SIZE * 2), special->base.height + (TILE_SIZE * 2)
-      );
-
-      for (auto* normal : nearby)
-      {
-        if (normal->dying != DYING_NOT) continue;
-
-        if (rectcollision(special->base, normal->base))
-        {
-          normal->collision(special, CO_BADGUY);
-          special->collision(normal, CO_BADGUY);
-        }
-      }
+      collide_special_with_nearby(special);
     }
   }
+}
 
-  // Special vs Special collisions
+/** Mr. Iceblock in KICK mode can hit enemies OFF SCREEN, so it walks the whole
+    collider list instead of a bounded query, preserving original behavior. */
+void World::collide_kicked_iceblock(BadGuy* iceblock)
+{
+  for (auto* normal : normal_colliders)
+  {
+    if (normal->dying != DYING_NOT) continue;
+
+    if (rectcollision(iceblock->base, normal->base))
+    {
+      normal->collision(iceblock, CO_BADGUY);
+      iceblock->collision(normal, CO_BADGUY);
+    }
+  }
+}
+
+/** Every other special collider meets only what the grid hands back. */
+void World::collide_special_with_nearby(BadGuy* special)
+{
+  const auto& nearby = m_spatial_grid->query_badguys(
+    special->base.x - TILE_SIZE, special->base.y - TILE_SIZE,
+    special->base.width + (TILE_SIZE * 2), special->base.height + (TILE_SIZE * 2)
+  );
+
+  for (auto* normal : nearby)
+  {
+    // The grid contains ALL bad guys, so the query can return the special
+    // collider itself as well as other special colliders. Skip both:
+    // self-collision is never valid, and special-vs-special pairs are
+    // handled once by the dedicated pass.
+    if (normal == special) continue;
+    if (is_kicked_iceblock(normal)) continue;
+    if (normal->dying != DYING_NOT) continue;
+
+    if (rectcollision(special->base, normal->base))
+    {
+      normal->collision(special, CO_BADGUY);
+      special->collision(normal, CO_BADGUY);
+    }
+  }
+}
+
+void World::collide_specials_with_each_other()
+{
   for (size_t i = 0; i < special_colliders.size(); ++i)
   {
     BadGuy* special1 = special_colliders[i];
@@ -772,53 +859,55 @@ void World::collision_handler()
       }
     }
   }
+}
 
-  // Normal vs Normal (use spatial grid)
+void World::collide_normal_badguys()
+{
   const float screen_x_start = scroll_x - (float)(TILE_SIZE * 2);
   const float screen_x_end = scroll_x + screen->w + (float)(TILE_SIZE * 2);
 
   for (size_t i = 0; i < normal_colliders.size(); ++i)
   {
-    if (normal_colliders[i]->dying != DYING_NOT) continue;
-    if (normal_colliders[i]->base.x + normal_colliders[i]->base.width < screen_x_start ||
-        normal_colliders[i]->base.x > screen_x_end) continue;
+    BadGuy* cur = normal_colliders[i];
+
+    if (cur->dying != DYING_NOT) continue;
+    if (outside_x_band(cur->base, screen_x_start, screen_x_end)) continue;
 
     const auto& nearby = m_spatial_grid->query_badguys(
-      normal_colliders[i]->base.x - TILE_SIZE,
-      normal_colliders[i]->base.y - TILE_SIZE,
-      normal_colliders[i]->base.width + (TILE_SIZE * 2),
-      normal_colliders[i]->base.height + (TILE_SIZE * 2)
+      cur->base.x - TILE_SIZE,
+      cur->base.y - TILE_SIZE,
+      cur->base.width + (TILE_SIZE * 2),
+      cur->base.height + (TILE_SIZE * 2)
     );
 
     for (auto* other : nearby)
     {
-      if (other == normal_colliders[i]) continue;
-      if (other->dying != DYING_NOT) continue;
+      if (!pair_belongs_to(cur, other, screen_x_start, screen_x_end)) continue;
 
-      if (rectcollision(normal_colliders[i]->base, other->base))
+      if (rectcollision(cur->base, other->base))
       {
-        other->collision(normal_colliders[i], CO_BADGUY);
-        normal_colliders[i]->collision(other, CO_BADGUY);
+        // Callback order matches the original: the later element first.
+        other->collision(cur, CO_BADGUY);
+        cur->collision(other, CO_BADGUY);
       }
     }
   }
+}
 
-  // Player collisions
-  if (tux.dying != DYING_NOT) return;
-
+void World::collide_player_with_badguys()
+{
   for (auto* badguy : bad_guys)
   {
     if (badguy->dying != DYING_NOT) continue;
 
-    if (badguy->base.x + badguy->base.width < tux.base.x - (float)(TILE_SIZE * 2) ||
-        badguy->base.x > tux.base.x + tux.base.width + (float)(TILE_SIZE * 2))
+    if (outside_x_band(badguy->base,
+                       tux.base.x - (float)(TILE_SIZE * 2),
+                       tux.base.x + tux.base.width + (float)(TILE_SIZE * 2)))
       continue;
 
     if (rectcollision_offset(badguy->base, tux.base, 0, 0))
     {
-      if (tux.previous_base.y < tux.base.y &&
-          tux.previous_base.y + tux.previous_base.height < badguy->base.y + badguy->base.height/2 &&
-          !tux.invincible_timer.started())
+      if (tux_lands_on(tux, badguy))
       {
         badguy->collision(&tux, CO_PLAYER, COLLISION_SQUISH);
       }
@@ -829,16 +918,19 @@ void World::collision_handler()
       }
     }
   }
+}
 
-  // Upgrade collisions
+/** Upgrades can only be collected by the player, so only those inside a
+    64 pixel buffer around Tux are worth testing. */
+void World::collide_player_with_upgrades()
+{
   for (size_t index : upgrades.get_active_indices())
   {
-    // Upgrades can only be collected by the player, so we only need to check for them near the player
-    // Skip any upgrade that is not within a 64-pixel buffer around Tux
     Upgrade* upgrade = upgrades.get_object_at(index);
 
-    if (upgrade->base.x + upgrade->base.width < tux.base.x - (float)(TILE_SIZE * 2) ||
-        upgrade->base.x > tux.base.x + tux.base.width + (float)(TILE_SIZE * 2))
+    if (outside_x_band(upgrade->base,
+                       tux.base.x - (float)(TILE_SIZE * 2),
+                       tux.base.x + tux.base.width + (float)(TILE_SIZE * 2)))
     {
       continue;
     }

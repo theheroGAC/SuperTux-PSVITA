@@ -39,10 +39,6 @@ namespace {
 /** The datadir prefix prepended when loading game data file */
 std::string datadir;
 
-JoystickKeymap::JoystickKeymap()
-{
-}
-
 JoystickKeymap joystick_keymap;
 bool is_nunchuk_connected = false;
 
@@ -61,7 +57,6 @@ bool use_joystick;
 bool use_fullscreen;
 bool debug_mode;
 bool show_fps;
-bool show_mouse;
 bool tv_overscan_enabled;
 bool swap_x_and_o = false;
 int offset_y = 0;
@@ -69,6 +64,7 @@ float game_speed = 1.0f;
 
 int joystick_num = 0;
 std::string level_startup_file;
+volatile bool quit_requested = false;
 
 /* SuperTux directory ($HOME/.supertux) and save directory($HOME/.supertux/save) */
 std::string st_dir;
@@ -108,20 +104,19 @@ Uint8 adjust_joystick_hat(Uint8 hat)
     return hat;
   }
 
-  switch (hat)
+  // SDL gives each direction its own bit ordered: up, right, down, left
+  // A quarter turn moves every direction onto the bit below it, with up
+  // wrapping around to left, so the whole remap is a one bit rotation of
+  // the low nibble. Diagonals come along for free because rotating both
+  // of their bits lands on the rotated diagonal.
+  constexpr Uint8 HAT_MASK = SDL_HAT_UP | SDL_HAT_RIGHT | SDL_HAT_DOWN | SDL_HAT_LEFT;
+
+  if ((hat & ~HAT_MASK) != 0)
   {
-    case SDL_HAT_UP:        return SDL_HAT_LEFT;
-    case SDL_HAT_DOWN:      return SDL_HAT_RIGHT;
-    case SDL_HAT_LEFT:      return SDL_HAT_DOWN;
-    case SDL_HAT_RIGHT:     return SDL_HAT_UP;
-
-    case SDL_HAT_RIGHTUP:   return SDL_HAT_LEFTUP;    // Right(Up) + Up(Left) -> Up + Left
-    case SDL_HAT_RIGHTDOWN: return SDL_HAT_RIGHTUP;   // Right(Up) + Down(Right) -> Up + Right
-    case SDL_HAT_LEFTUP:    return SDL_HAT_LEFTDOWN;  // Left(Down) + Up(Left) -> Down + Left
-    case SDL_HAT_LEFTDOWN:  return SDL_HAT_RIGHTDOWN; // Left(Down) + Down(Right) -> Down + Right
-
-    default:                return hat;
+    return hat; // Nothing we recognise as a direction, pass it through
   }
+
+  return static_cast<Uint8>(((hat >> 1) | (hat << 3)) & HAT_MASK);
 }
 
 /* Returns 1 for every button event, 2 for a quit event and 0 for no event. */
@@ -152,6 +147,14 @@ int wait_for_event(SDL_Event& event, unsigned int min_delay, unsigned int max_de
 
   for (i = 0; maxdelay.check() || !i; ++i)
   {
+    /* The close request may have been consumed by an earlier loop, or have
+       arrived while min_delay was still swallowing input, so check the flag
+       as well as the events. */
+    if (quit_requested)
+    {
+      return 2;
+    }
+
     while (st_poll_event(&event))
     {
       if (!mindelay.check())
@@ -213,15 +216,6 @@ void draw_player_hud()
       tux_life->draw(545 + (18 * i), 20 + offset_y);
     }
   }
-}
-
-void st_wii_input_init()
-{
-#ifdef __WII__
-  WPAD_Init();
-  // Enable all buttons and accelerometer for all connected controllers
-  WPAD_SetDataFormat(WPAD_CHAN_ALL, WPAD_FMT_BTNS_ACC_IR);
-#endif
 }
 
 /**
@@ -380,23 +374,29 @@ int st_poll_event(SDL_Event *event)
   // Fallback to standard SDL polling for other systems or non-Wii-specific
   // events
 #if defined(__VITA__)
+  int got_event = 0;
   while (true)
   {
     int polled = SDL_PollEvent(event);
     if (!polled)
-      return 0;
+    {
+      got_event = 0;
+      break;
+    }
 
     if (event->type == SDL_JOYBUTTONDOWN || event->type == SDL_JOYBUTTONUP)
     {
       if (event->jbutton.button == 11)
       {
         event->jbutton.button = 6;
-        return 1;
+        got_event = 1;
+        break;
       }
       else if (event->jbutton.button == 10)
       {
         event->jbutton.button = 4;
-        return 1;
+        got_event = 1;
+        break;
       }
       else if (event->jbutton.button == 6 || event->jbutton.button == 7 || event->jbutton.button == 8 || event->jbutton.button == 9)
       {
@@ -405,19 +405,29 @@ int st_poll_event(SDL_Event *event)
       else if (event->jbutton.button == 4)
       {
         event->jbutton.button = 14;
-        return 1;
+        got_event = 1;
+        break;
       }
       else if (event->jbutton.button == 5)
       {
         event->jbutton.button = 15;
-        return 1;
+        got_event = 1;
+        break;
       }
     }
-    return 1;
+    got_event = 1;
+    break;
   }
 #else
-  return SDL_PollEvent(event);
+  const int got_event = SDL_PollEvent(event);
 #endif
+
+  if (got_event && event->type == SDL_QUIT)
+  {
+    quit_requested = true;
+  }
+
+  return got_event;
 }
 
 // EOF

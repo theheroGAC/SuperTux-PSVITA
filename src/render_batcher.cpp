@@ -28,18 +28,21 @@
  */
 RenderBatcher::RenderBatcher()
 {
+  // Warm-start capacities so the first frames don't reallocate repeatedly.
+  // 4096 vertices = 1024 quads (64 KB), comfortably above a typical frame's
+  // tile + sprite count; the arena grows further only if a frame exceeds it.
+  m_vertices.reserve(4096);
+  m_spans.reserve(64);
 }
 
 /**
  * Adds a complete sprite surface to the batch for rendering.
  * This is a convenience wrapper around the add_part method.
  * @param surface The Surface containing the texture to be drawn.
- * @param x The destination world x-coordinate.
- * @param y The destination world y-coordinate.
- * @param x_hotspot The x-offset from the coordinates to the sprite's origin.
- * @param y_hotspot The y-offset from the coordinates to the sprite's origin.
+ * @param x The destination world x-coordinate, hotspot already applied.
+ * @param y The destination world y-coordinate, hotspot already applied.
  */
-void RenderBatcher::add(Surface* surface, float x, float y, int x_hotspot, int y_hotspot)
+void RenderBatcher::add(Surface* surface, float x, float y)
 {
   if (!surface)
   {
@@ -49,7 +52,7 @@ void RenderBatcher::add(Surface* surface, float x, float y, int x_hotspot, int y
   // This function is now a simple wrapper around add_part.
   // It adds the *full* surface by specifying a source rectangle
   // at (0,0) with the surface's full width and height.
-  add_part(surface, 0.0f, 0.0f, x, y, surface->w, surface->h, x_hotspot, y_hotspot);
+  add_part(surface, 0.0f, 0.0f, x, y, surface->w, surface->h);
 }
 
 /**
@@ -59,29 +62,29 @@ void RenderBatcher::add(Surface* surface, float x, float y, int x_hotspot, int y
  * @param surface The Surface containing the texture to be drawn.
  * @param sx The source x-coordinate of the rectangle within the texture.
  * @param sy The source y-coordinate of the rectangle within the texture.
- * @param x The destination world x-coordinate.
- * @param y The destination world y-coordinate.
+ * @param x The destination world x-coordinate, hotspot already applied.
+ * @param y The destination world y-coordinate, hotspot already applied.
  * @param w The width of the portion to draw.
  * @param h The height of the portion to draw.
- * @param x_hotspot The x-offset from the coordinates to the sprite's origin.
- * @param y_hotspot The y-offset from the coordinates to the sprite's origin.
  */
-void RenderBatcher::add_part(Surface* surface, float sx, float sy, float x, float y, float w, float h, int x_hotspot, int y_hotspot)
+void RenderBatcher::add_part(Surface* surface, float sx, float sy, float x, float y, float w, float h)
 {
   if (!surface)
   {
     return;
   }
 
-  SurfaceOpenGL* gl_surface = dynamic_cast<SurfaceOpenGL*>(surface->impl.get());
+  // impl is null-checked because Surface tolerates a null impl; see the
+  // guards around impl in texture.cpp.
+  SurfaceOpenGL* gl_surface = surface->impl ? surface->impl->as_opengl() : nullptr;
   if (!gl_surface)
   {
     return;
   }
 
   GLuint tex_id = gl_surface->gl_texture;
-  float draw_x = x - x_hotspot - scroll_x;
-  float draw_y = y - y_hotspot;
+  float draw_x = x - scroll_x;
+  float draw_y = y;
 
   // Round to nearest integer to match original SDL/OpenGL behavior.
   // This prevents "breathing" gaps between tiles during scrolling.
@@ -93,25 +96,20 @@ void RenderBatcher::add_part(Surface* surface, float sx, float sy, float x, floa
   float u2 = (sx + w) / gl_surface->tex_w_allocated;
   float v2 = (sy + h) / gl_surface->tex_h_allocated;
 
-  // Try to add to the LAST batch if it has the same texture
-  if (!m_batches.empty() && m_batches.back().texture_id == tex_id)
+  // Extend the LAST span if it uses the same texture; otherwise open a new
+  // span starting at the current end of the vertex arena. Spans are drawn in
+  // order, so the original draw sequence is preserved either way.
+  if (m_spans.empty() || m_spans.back().texture_id != tex_id)
   {
-    std::vector<VertexData>& vertices = m_batches.back().vertices;
-    vertices.push_back({draw_x, draw_y, u1, v1});
-    vertices.push_back({draw_x + w, draw_y, u2, v1});
-    vertices.push_back({draw_x + w, draw_y + h, u2, v2});
-    vertices.push_back({draw_x, draw_y + h, u1, v2});
+    m_spans.push_back(BatchSpan{tex_id, m_vertices.size(), 0});
   }
-  else
-  {
-    RenderBatch new_batch;
-    new_batch.texture_id = tex_id;
-    new_batch.vertices.push_back({draw_x, draw_y, u1, v1});
-    new_batch.vertices.push_back({draw_x + w, draw_y, u2, v1});
-    new_batch.vertices.push_back({draw_x + w, draw_y + h, u2, v2});
-    new_batch.vertices.push_back({draw_x, draw_y + h, u1, v2});
-    m_batches.push_back(new_batch);
-  }
+
+  m_vertices.push_back({draw_x, draw_y, u1, v1});
+  m_vertices.push_back({draw_x + w, draw_y, u2, v1});
+  m_vertices.push_back({draw_x + w, draw_y + h, u2, v2});
+  m_vertices.push_back({draw_x, draw_y + h, u1, v2});
+
+  m_spans.back().count += 4;
 }
 
 /**
@@ -122,7 +120,7 @@ void RenderBatcher::add_part(Surface* surface, float sx, float sy, float x, floa
  */
 void RenderBatcher::flush()
 {
-  if (m_batches.empty())
+  if (m_spans.empty())
   {
     return;
   }
@@ -138,20 +136,23 @@ void RenderBatcher::flush()
   glEnableClientState(GL_VERTEX_ARRAY);
   glEnableClientState(GL_TEXTURE_COORD_ARRAY);
 
-  // Draw batches IN ORDER - this preserves the original draw sequence!
-  for (const RenderBatch& batch : m_batches)
+  // All spans index into one arena, so the array pointers only need to be
+  // set once. No reallocation can occur during flush, so the pointers stay
+  // valid for the whole loop.
+  glVertexPointer(2, GL_FLOAT, sizeof(VertexData), &m_vertices[0].x);
+  glTexCoordPointer(2, GL_FLOAT, sizeof(VertexData), &m_vertices[0].u);
+
+  // Draw spans IN ORDER - this preserves the original draw sequence!
+  for (const BatchSpan& span : m_spans)
   {
-    if (batch.vertices.empty())
+    if (span.count == 0)
     {
       continue;
     }
 
-    glBindTexture(GL_TEXTURE_2D, batch.texture_id);
-
-    glVertexPointer(2, GL_FLOAT, sizeof(VertexData), &batch.vertices[0].x);
-    glTexCoordPointer(2, GL_FLOAT, sizeof(VertexData), &batch.vertices[0].u);
-
-    glDrawArrays(GL_QUADS, 0, batch.vertices.size());
+    glBindTexture(GL_TEXTURE_2D, span.texture_id);
+    glDrawArrays(GL_QUADS, static_cast<GLint>(span.first),
+                 static_cast<GLsizei>(span.count));
   }
 
   glDisableClientState(GL_VERTEX_ARRAY);
@@ -160,7 +161,10 @@ void RenderBatcher::flush()
   // Reset state to sync with the tracker instead of manual glDisable
   SurfaceOpenGL::reset_state();
 
-  m_batches.clear();
+  // clear() keeps the allocated capacity, so subsequent frames reuse the
+  // same memory instead of reallocating.
+  m_vertices.clear();
+  m_spans.clear();
 }
 
 #endif // NOOPENGL

@@ -16,8 +16,8 @@
 #include <iostream>
 #include <cstdlib>
 #include <cstring>
-#include <sstream>
-#include <algorithm>
+#include <cerrno>
+#include <climits>
 
 #ifdef __WII__
 #include <gccore.h>
@@ -48,7 +48,7 @@
 /* Local function prototypes: */
 #ifndef __WII__
 void seticon(void);
-void usage(char* prog, int ret);
+[[noreturn]] void usage(char* prog, int ret);
 #endif
 
 /**
@@ -128,10 +128,68 @@ void st_general_free(void)
   delete game_menu;
   delete save_game_menu;
   delete load_game_menu;
-  delete options_joystick_menu;
   delete options_keys_menu;
   delete options_menu;
   delete main_menu;
+}
+
+/**
+ * Settles whether to keep using a joystick when SDL reports none at all.
+ */
+static void no_joysticks_available(void)
+{
+#ifdef __WII__
+  // On Wii, we effectively always have a joystick (Wiimote) via WPAD.
+  // Even if SDL sees none, we force enabled so config saves correctly
+  // 'joystick 0'.
+  use_joystick = true;
+  if (joystick_num < 0)
+    joystick_num = 0;
+#else
+  fprintf(stderr, "Warning: No joysticks are available.\n");
+  use_joystick = false;
+#endif
+}
+
+/**
+ * Settles whether to keep using a joystick that SDL refused to open.
+ */
+static void joystick_open_failed(void)
+{
+#ifdef __WII__
+  // Ignore open failure on Wii; we use custom polling.
+  use_joystick = true;
+#else
+  fprintf(stderr, "Warning: Could not open joystick %d.\n"
+                  "The Simple DirectMedia error that occurred was:\n%s\n\n",
+          joystick_num, SDL_GetError());
+
+  use_joystick = false;
+#endif
+}
+
+/**
+ * Reports on an opened joystick that is short of axes or buttons.
+ * @param joystick The joystick SDL handed back.
+ */
+static void check_joystick_capabilities(SDL_Joystick* joystick)
+{
+  if (SDL_JoystickNumAxes(joystick) < 2)
+  {
+    fprintf(stderr, "Warning: Joystick does not have enough axes!\n");
+    // We don't disable joystick here anymore because a sideways Wiimote
+    // might report weird axes but still be valid for buttons/dpad.
+  }
+
+  if (SDL_JoystickNumButtons(joystick) < 2)
+  {
+#ifdef __WII__
+    use_joystick = true;
+#else
+    fprintf(stderr, "Warning: Joystick does not have enough buttons!\n");
+    use_joystick = false;
+#endif
+  }
 }
 
 /**
@@ -144,74 +202,53 @@ void st_joystick_setup(void)
 
   if (SDL_Init(SDL_INIT_JOYSTICK) < 0)
   {
-    std::string error_msg = "Warning: Could not initialize joystick!\n"
-                            "The Simple DirectMedia error that occurred was:\n";
-    error_msg += SDL_GetError();
-    fprintf(stderr, "%s\n\n", error_msg.c_str());
+    fprintf(stderr, "Warning: Could not initialize joystick!\n"
+                    "The Simple DirectMedia error that occurred was:\n%s\n\n",
+            SDL_GetError());
 
     use_joystick = false;
+    return;
+  }
+
+  // Ensure events are enabled and pump them once to update state
+  SDL_JoystickEventState(SDL_ENABLE);
+  SDL_PumpEvents();
+
+#ifdef __WII__
+  // SDL_Init resets WPAD. We must set the data format AFTER SDL_Init
+  // to ensure the Nunchuk/Extensions are detected and reported correctly
+  // for our custom polling in globals.cpp.
+  WPAD_SetDataFormat(WPAD_CHAN_ALL, WPAD_FMT_BTNS_ACC_IR);
+#endif
+
+  /* Open joystick: */
+  if (SDL_NumJoysticks() <= 0)
+  {
+#if defined(__WII__) || defined(__VITA__) || defined(__PS3__)
+    // On Wii, Vita, and PS3, we always want to use the controller
+    use_joystick = true;
+    if (joystick_num < 0)
+      joystick_num = 0;
+#else
+    no_joysticks_available();
+    return;
+#endif
   }
   else
   {
-    // Ensure events are enabled and pump them once to update state
-    SDL_JoystickEventState(SDL_ENABLE);
-    SDL_PumpEvents();
-
-#ifdef __WII__
-    // SDL_Init resets WPAD. We must set the data format AFTER SDL_Init
-    // to ensure the Nunchuk/Extensions are detected and reported correctly
-    // for our custom polling in globals.cpp.
-    WPAD_SetDataFormat(WPAD_CHAN_ALL, WPAD_FMT_BTNS_ACC_IR);
-#endif
-
-    /* Open joystick: */
-    if (SDL_NumJoysticks() <= 0)
+    js = SDL_JoystickOpen(joystick_num);
+    if (js == nullptr)
     {
-#if defined(__WII__) || defined(__VITA__)
-      // On Wii and Vita, we always want to use the controller
+#if defined(__WII__) || defined(__VITA__) || defined(__PS3__)
       use_joystick = true;
-      if (joystick_num < 0)
-        joystick_num = 0;
 #else
-      fprintf(stderr, "Warning: No joysticks are available.\n");
-      use_joystick = false;
+      joystick_open_failed();
+      return;
 #endif
     }
     else
     {
-      js = SDL_JoystickOpen(joystick_num);
-      if (js == nullptr)
-      {
-#if defined(__WII__) || defined(__VITA__)
-        use_joystick = true;
-#else
-        std::string error_msg = "Warning: Could not open joystick " + std::to_string(joystick_num) + ".\n"
-                                "The Simple DirectMedia error that occurred was:\n";
-        error_msg += SDL_GetError();
-        fprintf(stderr, "%s\n\n", error_msg.c_str());
-
-        use_joystick = false;
-#endif
-      }
-      else
-      {
-        if (SDL_JoystickNumAxes(js) < 2)
-        {
-          fprintf(stderr, "Warning: Joystick does not have enough axes!\n");
-          // We don't disable joystick here anymore because a sideways Wiimote
-          // might report weird axes but still be valid for buttons/dpad.
-        }
-
-        if (SDL_JoystickNumButtons(js) < 2)
-        {
-#if defined(__WII__) || defined(__VITA__)
-          use_joystick = true;
-#else
-          fprintf(stderr, "Warning: Joystick does not have enough buttons!\n");
-          use_joystick = false;
-#endif
-        }
-      }
+      check_joystick_capabilities(js);
     }
   }
 }
@@ -276,6 +313,87 @@ void st_audio_setup(void)
   }
 }
 
+#ifdef __WII__
+
+/** Written from an interrupt handler, so it is volatile and the handler
+    does nothing but record the request. */
+static volatile bool power_off_requested = false;
+
+/**
+ * Records a press of the console power button.
+ * @see st_power_setup for why this replaces SDL's own handler.
+ */
+static void on_power_button(void)
+{
+  power_off_requested = true;
+  quit_requested = true;
+}
+
+/**
+ * Records a press of a Wii Remote power button.
+ * @param chan_ The controller channel the request came from, which we ignore
+ *              because either remote means the same thing here.
+ */
+static void on_remote_power_button(s32 chan_)
+{
+  (void)chan_;
+  on_power_button();
+}
+
+#endif
+
+/**
+ * Takes the Wii power button away from SDL.
+ *
+ * SDL's Wii startup code registers its own handlers for both power buttons
+ * before SDL_main() is reached. Those set a flag that makes SDL's event pump
+ * call SYS_ResetSystem(SYS_POWEROFF, 0, 0) and then carry on pumping. That
+ * call is not the end of the world it looks like: libogc asks IOS to cut the
+ * power, but the request is asynchronous, so libogc goes on to shut IOS down,
+ * disable interrupts and return to its caller. SDL then reads the Wii Remotes
+ * and the USB keyboard through an IOS that no longer exists, and hands the
+ * game an SDL_QUIT so the game does the same. Whether that ends in a clean
+ * power off or an exception depends on how quickly the hardware cuts power,
+ * which is why it fails only sometimes.
+ *
+ * Registering our own handlers means SDL's flag is never set and its pump
+ * never reaches that call. We record the request instead, let the game unwind
+ * normally, and power off from main() once the config has been saved. Both
+ * libogc setters return the handler they replaced, which we do not need.
+ */
+void st_power_setup(void)
+{
+#ifdef __WII__
+  SYS_SetPowerCallback(on_power_button);
+  WPAD_SetPowerButtonCallback(on_remote_power_button);
+#endif
+}
+
+/**
+ * Powers the console off, if that is what the player asked for.
+ * Call this only once the game has finished shutting down, because it does
+ * not return when a power off is pending.
+ */
+void st_power_off_if_requested(void)
+{
+#ifdef __WII__
+  if (!power_off_requested)
+  {
+    return;
+  }
+
+  SYS_ResetSystem(SYS_POWEROFF, 0, 0);
+
+  // libogc returns from that call if IOS has not cut the power yet, having
+  // already torn IOS down and disabled interrupts. Stop here rather than run
+  // on in that state. The condition re-reads a volatile flag that stays true,
+  // so the wait cannot be optimised away.
+  while (power_off_requested)
+  {
+  }
+#endif
+}
+
 /**
  * Performs a graceful shutdown of the application, ensuring all
  * resources are freed, SDL subsystems are quit, and game configuration
@@ -304,10 +422,73 @@ void st_shutdown(void)
   // which will be called automatically and safely when main() returns.
   // Calling it manually here leads to a double-free and a segfault.
 
-#ifdef __WII__
-  // Reset the system and return to the system menu
-  SYS_ResetSystem(SYS_RETURNTOMENU, 0, 0);
-#endif
+  // DO NOT add a return-to-menu call here.
+  //
+  // One was here for years and it was wrong. Working out why cost a great
+  // deal of time, so the findings are written down rather than left to be
+  // rediscovered.
+  //
+  // HOW EXITING IS MEANT TO WORK ON WII AND vWII
+  //
+  // A homebrew app ends by returning from main() or calling exit(). That is
+  // the documented convention (WiiBrew, "Developer tips") and it is what
+  // every one of devkitPro's own Wii examples does. libogc then looks for
+  // the marker "STUBHAXX" at 0x80001804. If a launcher left one there,
+  // libogc jumps to the return stub at 0x80001800 and the player lands back
+  // in whatever started the app, normally the Homebrew Channel or a USB
+  // loader. If no marker is present, libogc reboots the console itself.
+  // Handling the no-launcher case is libogc's job, not ours.
+  //
+  // vWii needs no special handling. The Homebrew Channel has shipped Wii U
+  // (Wii Mode) support since 1.1.1 and installs the same stub, so a single
+  // code path covers both machines.
+  //
+  // WHAT USED TO BE HERE, AND WHY IT WAS WRONG
+  //
+  // SYS_ResetSystem(SYS_RETURNTOMENU, 0, 0) forced the Wii System Menu, so
+  // anyone who launched the game from the Homebrew Channel or a loader was
+  // ejected to the menu instead of returned to where they came from. It is
+  // also costlier than it looks. libogc maps that request to
+  // WII_ReturnToMenu(), which writes
+  // /title/00000001/00000002/data/state.dat and then
+  // /shared2/sys/NANDBOOTINFO before launching the System Menu title. That
+  // is two NAND writes on every exit, and NAND-writing homebrew is
+  // precisely what vWii users are warned against. If any step fails,
+  // SYS_ResetSystem falls through past __IOS_ShutdownSubsystems() and
+  // __irq_shutdown() and returns to its caller, leaving the game running
+  // with IOS torn down and interrupts disabled.
+  //
+  // DOLPHIN, AND WHY WE DO NOT WORK AROUND IT
+  //
+  // Under Dolphin, exiting stops the emulator rather than returning to the
+  // Homebrew Channel. That is not our defect and it cannot be repaired from
+  // here. Dolphin claims memory 0x1800 to 0x3000 for its cheat engine, the
+  // same range the Homebrew Channel's return stub occupies, and it never
+  // checks whether anything already lives there.
+  //
+  //   Cheats disabled: PatchFixedFunctions() hooks 0x80001800 with
+  //   HBReload, whose entire body is CPU().Break() plus a stop message.
+  //   That hook lives in a Dolphin-side address map rather than in
+  //   emulated RAM, so the guest can neither see it nor overwrite it.
+  //
+  //   Cheats enabled: that hook is skipped, but two others are installed
+  //   unconditionally at 0x800018A8 and 0x80002FFC, both of which sit
+  //   inside the stub. Reaching the first runs
+  //   GeckoCodeHandlerICacheFlush(), which writes 0xD01F1BAE over
+  //   0x80001800 and resets the icache, corrupting the very stub that is
+  //   mid-execution.
+  //
+  // There is therefore no configuration in which Dolphin returns to the
+  // Homebrew Channel, and nothing written here would change that.
+  // Detecting Dolphin is easy enough, since it registers a /dev/dolphin IOS
+  // device for that purpose, but it would only let us pick a different
+  // wrong behaviour while shipping emulator-specific code to every real
+  // console. Do not do it.
+  //
+  // Dolphin can fix this upstream, and the precedent sits in the same
+  // function: PatchFixedFunctions() already returns early for MIOS, which
+  // reserves the same low memory for the same reason. The Homebrew Channel
+  // never received the equivalent exemption.
 }
 
 /**
@@ -328,14 +509,13 @@ void st_shutdown(void)
   print_status(errmsg.c_str());
 
   // Wait for 3 seconds before exiting to allow reading the error message
-  struct timespec req = {3, 0}; // 3 seconds sleep
-  nanosleep( &req, nullptr);
+  SDL_Delay(3000);
 
   // Perform standard shutdown
   st_shutdown();
 
-  // Use abort as a final fallback
-  abort(); // This ensures the process terminates if shutdown doesn't fully exit
+  // Terminate with a failure status
+  exit(1); // Unlike abort(), this runs the remaining atexit handlers
 }
 
 /**
@@ -372,6 +552,205 @@ void seticon(void)
 }
 
 /**
+ * Displays the full help message listing every command-line option.
+ * @param prog The name of the program.
+ */
+static void print_help(const char* prog)
+{
+  puts("SuperTux Wii " VERSION "\n"
+       "  Please see the file \"README.txt\" for more details.\n");
+  printf("Usage: %s [OPTIONS] FILENAME\n\n", prog);
+  puts("Display Options:\n"
+    "  -w, --window        Run in window mode.\n"
+    "  -f, --fullscreen    Run in fullscreen mode.\n"
+    "  -gl, --opengl       If opengl support was compiled in, this will enable\n"
+    "                      the OpenGL mode.\n"
+    "  --sdl               Use non-opengl renderer\n"
+    "\n"
+    "Sound Options:\n"
+    "  --disable-sound     If sound support was compiled in,  this will\n"
+    "                      disable sound for this session of the game.\n"
+    "  --disable-music     Like above, but this will disable music.\n"
+    "\n"
+    "Misc Options:\n"
+    "  -j, --joystick NUM  Use joystick NUM (default: 0)\n"
+    "  -d, --datadir DIR   Load Game data from DIR (default: automatic)\n"
+    "  --debug-mode        Enables the debug-mode, which is useful for developers.\n"
+    "  --help              Display a help message summarizing command-line\n"
+    "                      options, license and game controls.\n"
+    "  --usage             Display a brief message summarizing command-line options.\n"
+    "  --version           Display the version of SuperTux you're running.\n\n");
+}
+
+/**
+ * Reads the value that follows an option, advancing the index past it.
+ * Exits when the option was given without a value.
+ * @param argc  The number of arguments.
+ * @param argv  The array of argument strings.
+ * @param index The index of the option, left pointing at its value.
+ * @param what  The kind of value expected, quoted back in the error message.
+ * @return const char* The value that followed the option.
+ */
+static const char* take_option_value(int argc, char* argv[], int& index,
+                                     const char* what)
+{
+  if (index + 1 >= argc)
+  {
+    fprintf(stderr, "Option %s requires %s.\n\n", argv[index], what);
+    exit(1);
+  }
+
+  return argv[++index];
+}
+
+/**
+ * Converts a joystick number given on the command line.
+ * Exits when the value is not a whole number that fits in an int.
+ * @param value The argument text to convert.
+ * @return int The joystick number.
+ */
+static int parse_joystick_number(const char* value)
+{
+  char* endptr = nullptr;
+  errno = 0;
+  const long parsed = strtol(value, &endptr, 10);
+
+  if (endptr == value || *endptr != '\0' || errno == ERANGE
+      || parsed < INT_MIN || parsed > INT_MAX)
+  {
+    fprintf(stderr, "Invalid joystick number: %s\n\n", value);
+    exit(1);
+  }
+
+  return static_cast<int>(parsed);
+}
+
+/**
+ * Applies the command-line options that select how the game is displayed.
+ * @param arg The argument text to match.
+ * @return bool True when the argument was recognised.
+ */
+static bool parse_display_option(const char* arg)
+{
+  if (strcmp(arg, "--fullscreen") == 0 || strcmp(arg, "-f") == 0)
+  {
+    /* Use full screen */
+    use_fullscreen = true;
+  }
+  else if (strcmp(arg, "--window") == 0 || strcmp(arg, "-w") == 0)
+  {
+    /* Use window mode */
+    use_fullscreen = false;
+  }
+  else if (strcmp(arg, "--opengl") == 0 || strcmp(arg, "-gl") == 0)
+  {
+#ifndef NOOPENGL
+    /* Use OpenGL */
+    use_gl = true;
+#else
+    /* Recognised, but there is no renderer behind it in this build */
+    fprintf(stderr, "Option %s ignored: this build has no OpenGL support.\n\n",
+            arg);
+#endif
+  }
+  else if (strcmp(arg, "--sdl") == 0)
+  {
+    /* Use SDL (non-OpenGL) */
+    use_gl = false;
+  }
+  else if (strcmp(arg, "--show-fps") == 0)
+  {
+    /* Show FPS */
+    show_fps = true;
+  }
+  else
+  {
+    return false;
+  }
+
+  return true;
+}
+
+/**
+ * Applies the command-line options that silence the compiled-in audio.
+ * @param arg The argument text to match.
+ * @return bool True when the argument was recognised.
+ */
+static bool parse_sound_option(const char* arg)
+{
+  if (strcmp(arg, "--disable-sound") == 0)
+  {
+    /* Disable the compiled-in sound feature */
+    printf("Sounds disabled\n");
+    use_sound = false;
+    audio_device = false;
+  }
+  else if (strcmp(arg, "--disable-music") == 0)
+  {
+    /* Disable the compiled-in music feature */
+    printf("Music disabled\n");
+    use_music = false;
+  }
+  else
+  {
+    return false;
+  }
+
+  return true;
+}
+
+/**
+ * Applies the remaining options, both those carrying a value of their own
+ * and those that only report and quit.
+ * @param argc  The number of arguments.
+ * @param argv  The array of argument strings.
+ * @param index The index of the option, advanced past any value it consumes.
+ * @return bool True when the argument was recognised.
+ */
+static bool parse_misc_option(int argc, char* argv[], int& index)
+{
+  const char* arg = argv[index];
+
+  if (strcmp(arg, "--joystick") == 0 || strcmp(arg, "-j") == 0)
+  {
+    joystick_num = parse_joystick_number(
+        take_option_value(argc, argv, index, "a joystick number"));
+  }
+  else if (strcmp(arg, "--datadir") == 0 || strcmp(arg, "-d") == 0)
+  {
+    datadir = take_option_value(argc, argv, index, "a directory");
+  }
+  else if (strcmp(arg, "--debug-mode") == 0)
+  {
+    /* Enable the debug-mode */
+    debug_mode = true;
+  }
+  else if (strcmp(arg, "--usage") == 0)
+  {
+    /* Show usage */
+    usage(argv[0], 0);
+  }
+  else if (strcmp(arg, "--version") == 0)
+  {
+    /* Show version */
+    printf("SuperTux " VERSION "\n");
+    exit(0);
+  }
+  else if (strcmp(arg, "--help") == 0)
+  {
+    /* Show help */
+    print_help(argv[0]);
+    exit(0);
+  }
+  else
+  {
+    return false;
+  }
+
+  return true;
+}
+
+/**
  * Parses the command-line arguments to set various options for the game.
  * Arguments include options for fullscreen, joystick, data directory,
  * showing FPS, and enabling debug mode.
@@ -383,137 +762,17 @@ void parseargs(int argc, char* argv[])
   /* Parse arguments */
   for (int i = 1; i < argc; ++i)
   {
-    if (strcmp(argv[i], "--fullscreen") == 0 || strcmp(argv[i], "-f") == 0)
+    const char* arg = argv[i];
+
+    if (parse_display_option(arg) || parse_sound_option(arg)
+        || parse_misc_option(argc, argv, i))
     {
-      /* Use full screen */
-      use_fullscreen = true;
+      continue;
     }
-    else if (strcmp(argv[i], "--window") == 0 || strcmp(argv[i], "-w") == 0)
+
+    if (arg[0] != '-')
     {
-      /* Use window mode */
-      use_fullscreen = false;
-    }
-    else if (strcmp(argv[i], "--joystick") == 0 || strcmp(argv[i], "-j") == 0)
-    {
-      if (i + 1 < argc)
-      {
-        char* endptr;
-        joystick_num = strtol(argv[++i], &endptr, 10);
-        if (*endptr != '\0')
-        {
-          std::string error_msg = "Invalid joystick number: " + std::string(argv[i]);
-          exit(1);
-        }
-      }
-    }
-    else if (strcmp(argv[i], "--joymap") == 0)
-    {
-      if (i + 1 < argc)
-      {
-        std::string joymap_str = argv[++i];
-        std::replace(joymap_str.begin(), joymap_str.end(), ':', ' '); // Replace colons with spaces
-        std::stringstream ss(joymap_str);
-        if (!(ss >> joystick_keymap.x_axis >> joystick_keymap.y_axis >> joystick_keymap.a_button >> joystick_keymap.b_button >> joystick_keymap.start_button))
-        {
-          puts("Warning: Invalid or incomplete joymap, should be: 'XAXIS:YAXIS:A:B:START'");
-        }
-        else
-        {
-          printf("Using new joymap: X=%d, Y=%d, A=%d, B=%d, START=%d\n",
-                 joystick_keymap.x_axis,
-                 joystick_keymap.y_axis,
-                 joystick_keymap.a_button,
-                 joystick_keymap.b_button,
-                 joystick_keymap.start_button);
-        }
-      }
-    }
-    else if (strcmp(argv[i], "--datadir") == 0 || strcmp(argv[i], "-d") == 0)
-    {
-      if (i + 1 < argc)
-      {
-        datadir = argv[++i];
-      }
-    }
-    else if (strcmp(argv[i], "--show-fps") == 0)
-    {
-      /* Show FPS */
-      show_fps = true;
-    }
-    else if (strcmp(argv[i], "--opengl") == 0 || strcmp(argv[i], "-gl") == 0)
-    {
-#ifndef NOOPENGL
-      /* Use OpenGL */
-      use_gl = true;
-#endif
-    }
-    else if (strcmp(argv[i], "--sdl") == 0)
-    {
-      /* Use SDL (non-OpenGL) */
-      use_gl = false;
-    }
-    else if (strcmp(argv[i], "--usage") == 0)
-    {
-      /* Show usage */
-      usage(argv[0], 0);
-    }
-    else if (strcmp(argv[i], "--version") == 0)
-    {
-      /* Show version */
-      printf("SuperTux " VERSION "\n");
-      exit(0);
-    }
-    else if (strcmp(argv[i], "--disable-sound") == 0)
-    {
-      /* Disable the compiled-in sound feature */
-      printf("Sounds disabled\n");
-      use_sound = false;
-      audio_device = false;
-    }
-    else if (strcmp(argv[i], "--disable-music") == 0)
-    {
-      /* Disable the compiled-in music feature */
-      printf("Music disabled\n");
-      use_music = false;
-    }
-    else if (strcmp(argv[i], "--debug-mode") == 0)
-    {
-      /* Enable the debug-mode */
-      debug_mode = true;
-    }
-    else if (strcmp(argv[i], "--help") == 0)
-    {
-      /* Show help */
-      puts("SuperTux Wii" VERSION "\n"
-           "  Please see the file \"README.txt\" for more details.\n");
-      printf("Usage: %s [OPTIONS] FILENAME\n\n", argv[0]);
-      puts("Display Options:\n"
-        "  -w, --window        Run in window mode.\n"
-        "  -f, --fullscreen    Run in fullscreen mode.\n"
-        "  -gl, --opengl       If opengl support was compiled in, this will enable\n"
-        "                      the OpenGL mode.\n"
-        "  --sdl               Use non-opengl renderer\n"
-        "\n"
-        "Sound Options:\n"
-        "  --disable-sound     If sound support was compiled in,  this will\n"
-        "                      disable sound for this session of the game.\n"
-        "  --disable-music     Like above, but this will disable music.\n"
-        "\n"
-        "Misc Options:\n"
-        "  -j, --joystick NUM  Use joystick NUM (default: 0)\n"
-        "  --joymap XAXIS:YAXIS:A:B:START\n"
-        "                      Define how joystick buttons and axis should be mapped\n"
-        "  -d, --datadir DIR   Load Game data from DIR (default: automatic)\n"
-        "  --debug-mode        Enables the debug-mode, which is useful for developers.\n"
-        "  --help              Display a help message summarizing command-line\n"
-        "                      options, license and game controls.\n"
-        "  --usage             Display a brief message summarizing command-line options.\n"
-        "  --version           Display the version of SuperTux you're running.\n\n");
-      exit(0);
-    }
-    else if (argv[i][0] != '-')
-    {
-      level_startup_file = argv[i];
+      level_startup_file = arg;
     }
     else
     {
@@ -528,7 +787,7 @@ void parseargs(int argc, char* argv[])
  * @param prog The name of the program.
  * @param ret  The exit code (0 for success, non-zero for error).
  */
-void usage(char* prog, int ret)
+[[noreturn]] void usage(char* prog, int ret)
 {
   // Determine which stream to write to
   FILE* fi = (ret == 0) ? stdout : stderr;
@@ -539,8 +798,9 @@ void usage(char* prog, int ret)
   if (ret != 0)
   {
     fprintf(stderr, "Incorrect command-line arguments.\n");
-    exit(ret);
   }
+
+  exit(ret);
 }
 #endif /* #ifndef __WII__ */
 
@@ -554,7 +814,6 @@ void print_status(const char* st)
 #ifdef __WII__ // Check for Wii-specific compilation
 
   static void* xfb = nullptr;
-  static GXRModeObj* rmode = nullptr;
 
   // Only initialize the console video system once
   if (xfb == nullptr)
@@ -563,7 +822,7 @@ void print_status(const char* st)
     VIDEO_Init();
 
     // Obtain the preferred video mode from the system
-    rmode = VIDEO_GetPreferredMode(nullptr);
+    GXRModeObj* rmode = VIDEO_GetPreferredMode(nullptr);
 
     // Allocate memory for the display in the uncached region
     xfb = MEM_K0_TO_K1(SYS_AllocateFramebuffer(rmode));

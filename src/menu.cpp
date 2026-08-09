@@ -49,7 +49,6 @@ Menu* game_menu      = nullptr;
 Menu* worldmap_menu  = nullptr;
 Menu* options_menu   = nullptr;
 Menu* options_keys_menu     = nullptr;
-Menu* options_joystick_menu = nullptr;
 Menu* load_game_menu = nullptr;
 Menu* save_game_menu = nullptr;
 Menu* contrib_menu   = nullptr;
@@ -77,7 +76,7 @@ bool confirm_dialog(const std::string& text, Surface* background)
 
   Menu::set_current(dialog);
 
-  while (true)
+  while (!quit_requested)
   {
     SDL_Event event;
 
@@ -115,6 +114,12 @@ bool confirm_dialog(const std::string& text, Surface* background)
     mouse_cursor->draw();
     flipscreen();
   }
+
+  // The player asked to close the game while the dialog was still open. Answer
+  // no, so that a request to leave is never read as confirmation.
+  Menu::set_current(nullptr);
+  delete dialog;
+  return false;
 }
 
 /**
@@ -205,26 +210,26 @@ void MenuItem::change_input(const std::string& text_)
 /**
  * Converts the integer key code from a control field into a human-readable string
  * This is used to display the name of the currently bound key (e.g., "Up cursor", "Space")
- * @param item A pointer to the MN_CONTROLFIELD item to process
+ * @param item_ A pointer to the MN_CONTROLFIELD item to process
  */
-void Menu::get_controlfield_key_into_input(MenuItem* item)
+void Menu::get_controlfield_key_into_input(MenuItem* item_)
 {
-  switch (*item->int_p)
+  switch (*item_->int_p)
   {
-    case SDLK_UP:       item->change_input("Up cursor"); break;
-    case SDLK_DOWN:     item->change_input("Down cursor"); break;
-    case SDLK_LEFT:     item->change_input("Left cursor"); break;
-    case SDLK_RIGHT:    item->change_input("Right cursor"); break;
-    case SDLK_RETURN:   item->change_input("Return"); break;
-    case SDLK_SPACE:    item->change_input("Space"); break;
-    case SDLK_RSHIFT:   item->change_input("Right Shift"); break;
-    case SDLK_LSHIFT:   item->change_input("Left Shift"); break;
-    case SDLK_RCTRL:    item->change_input("Right Control"); break;
-    case SDLK_LCTRL:    item->change_input("Left Control"); break;
-    case SDLK_RALT:     item->change_input("Right Alt"); break;
-    case SDLK_LALT:     item->change_input("Left Alt"); break;
+    case SDLK_UP:       item_->change_input("Up cursor"); break;
+    case SDLK_DOWN:     item_->change_input("Down cursor"); break;
+    case SDLK_LEFT:     item_->change_input("Left cursor"); break;
+    case SDLK_RIGHT:    item_->change_input("Right cursor"); break;
+    case SDLK_RETURN:   item_->change_input("Return"); break;
+    case SDLK_SPACE:    item_->change_input("Space"); break;
+    case SDLK_RSHIFT:   item_->change_input("Right Shift"); break;
+    case SDLK_LSHIFT:   item_->change_input("Left Shift"); break;
+    case SDLK_RCTRL:    item_->change_input("Right Control"); break;
+    case SDLK_LCTRL:    item_->change_input("Left Control"); break;
+    case SDLK_RALT:     item_->change_input("Right Alt"); break;
+    case SDLK_LALT:     item_->change_input("Left Alt"); break;
     default:
-      item->change_input(std::to_string(*item->int_p));
+      item_->change_input(std::to_string(*item_->int_p));
       break;
   }
 }
@@ -270,8 +275,7 @@ void Menu::process_options_menu()
       break;
 
     case MNID_SOUND:
-      if (use_sound != isToggled(MNID_SOUND))
-        use_sound = isToggled(MNID_SOUND);
+      use_sound = isToggled(MNID_SOUND);
       break;
 
     case MNID_MUSIC:
@@ -282,24 +286,13 @@ void Menu::process_options_menu()
       }
       break;
 
-#ifdef TSCONTROL
-    case MNID_SHOWMOUSE:
-      if (show_mouse != isToggled(MNID_SHOWMOUSE))
-        show_mouse = isToggled(MNID_SHOWMOUSE);
-      break;
-#endif
-
     case MNID_SHOWFPS:
-      if (show_fps != isToggled(MNID_SHOWFPS))
-        show_fps = isToggled(MNID_SHOWFPS);
+      show_fps = isToggled(MNID_SHOWFPS);
       break;
 
     case MNID_TV_OVERSCAN:
-      if (tv_overscan_enabled != isToggled(MNID_TV_OVERSCAN))
-      {
-        tv_overscan_enabled = isToggled(MNID_TV_OVERSCAN);
-        offset_y = tv_overscan_enabled ? 40 : 0;
-      }
+      tv_overscan_enabled = isToggled(MNID_TV_OVERSCAN);
+      offset_y = tv_overscan_enabled ? 40 : 0;
       break;
   }
 }
@@ -416,16 +409,16 @@ void Menu::action()
     case MENU_ACTION_LEFT:
       if (item[active_item].kind == MN_STRINGSELECT && !item[active_item].list.empty())
       {
-        int& current = item[active_item].list_active_item;
-        current = (current > 0) ? current - 1 : item[active_item].list.size() - 1;
+        int& current_index = item[active_item].list_active_item;
+        current_index = (current_index > 0) ? current_index - 1 : item[active_item].list.size() - 1;
       }
       break;
 
     case MENU_ACTION_RIGHT:
       if (item[active_item].kind == MN_STRINGSELECT && !item[active_item].list.empty())
       {
-        int& current = item[active_item].list_active_item;
-        current = (current < static_cast<int>(item[active_item].list.size()) - 1) ? current + 1 : 0;
+        int& current_index = item[active_item].list_active_item;
+        current_index = (current_index < static_cast<int>(item[active_item].list.size()) - 1) ? current_index + 1 : 0;
       }
       break;
 
@@ -724,18 +717,18 @@ bool Menu::isToggled(int id) const
 /**
  * Processes SDL events and updates the menu state.
  * Handles user input such as keyboard, mouse, and joystick events.
- * @param event Reference to the SDL event to process.
+ * @param event_ Reference to the SDL event to process.
  */
-void Menu::event(SDL_Event& event)
+void Menu::event(SDL_Event& event_)
 {
   SDL_Keycode key;
   int x;
   int y;
 
-  switch (event.type)
+  switch (event_.type)
   {
     case SDL_KEYDOWN:
-      key = event.key.keysym.sym;
+      key = event_.key.keysym.sym;
 
       // Special handling for control fields, which are actively waiting for a key press.
       if (!item.empty() && item[active_item].kind == MN_CONTROLFIELD)
@@ -780,37 +773,37 @@ void Menu::event(SDL_Event& event)
 
     case SDL_JOYHATMOTION:
       // Apply rotation if needed
-      event.jhat.value = adjust_joystick_hat(event.jhat.value);
+      event_.jhat.value = adjust_joystick_hat(event_.jhat.value);
 
-      if (event.jhat.value == SDL_HAT_UP)
+      if (event_.jhat.value == SDL_HAT_UP)
       {
         menuaction = MENU_ACTION_UP;
       }
-      if (event.jhat.value == SDL_HAT_DOWN)
+      if (event_.jhat.value == SDL_HAT_DOWN)
       {
         menuaction = MENU_ACTION_DOWN;
       }
       break;
 
     case SDL_JOYAXISMOTION:
-      if (event.jaxis.axis == joystick_keymap.y_axis)
+      if (event_.jaxis.axis == joystick_keymap.y_axis)
       {
         // Static flag to ensure we only move once per press.
         // The stick must return to the deadzone before moving again.
         static bool joystick_axis_ready = true;
 
-        if (abs(event.jaxis.value) < joystick_keymap.dead_zone)
+        if (abs(event_.jaxis.value) < joystick_keymap.dead_zone)
         {
           joystick_axis_ready = true;
         }
         else if (joystick_axis_ready)
         {
-          if (event.jaxis.value > joystick_keymap.dead_zone)
+          if (event_.jaxis.value > joystick_keymap.dead_zone)
           {
             menuaction = MENU_ACTION_DOWN;
             joystick_axis_ready = false;
           }
-          else if (event.jaxis.value < -joystick_keymap.dead_zone)
+          else if (event_.jaxis.value < -joystick_keymap.dead_zone)
           {
             menuaction = MENU_ACTION_UP;
             joystick_axis_ready = false;
@@ -825,12 +818,12 @@ void Menu::event(SDL_Event& event)
       int cancel_btn1 = swap_x_and_o ? 0 : 1;
 
       // CONFIRM action
-      if (event.jbutton.button == confirm_btn1 || event.jbutton.button == 3)
+      if (event_.jbutton.button == confirm_btn1 || event_.jbutton.button == 3)
       {
         menuaction = MENU_ACTION_HIT;
       }
       // CANCEL action
-      else if (event.jbutton.button == cancel_btn1 || event.jbutton.button == 2)
+      else if (event_.jbutton.button == cancel_btn1 || event_.jbutton.button == 2)
       {
         // On the main menu or top-level pause menus, these buttons do nothing.
         if (this != main_menu && this != game_menu && this != worldmap_menu)
@@ -842,7 +835,7 @@ void Menu::event(SDL_Event& event)
         }
       }
       // HOME button always functions as a back/exit key
-      else if (event.jbutton.button == 6)
+      else if (event_.jbutton.button == 6)
       {
         Menu::pop_current();
       }
@@ -852,7 +845,7 @@ void Menu::event(SDL_Event& event)
 
     case SDL_MOUSEBUTTONDOWN:
       // If the ignore flag is set, this is a spurious click.
-      // Reset the flag and ignore the event.
+      // Reset the flag and ignore the event_.
       if (ignore_mouse_click)
       {
         ignore_mouse_click = false;
@@ -860,17 +853,17 @@ void Menu::event(SDL_Event& event)
       }
 
       // Process LEFT mouse clicks for selection.
-      if (event.button.button == SDL_BUTTON_LEFT)
+      if (event_.button.button == SDL_BUTTON_LEFT)
       {
-        x = event.button.x;
-        y = event.button.y;
+        x = event_.button.x;
+        y = event_.button.y;
         if (x > pos_x - get_width() / 2 && x < pos_x + get_width() / 2 && y > pos_y - get_height() / 2 && y < pos_y + get_height() / 2)
         {
           menuaction = MENU_ACTION_HIT;
         }
       }
       // Process RIGHT mouse clicks for going back.
-      else if (event.button.button == SDL_BUTTON_RIGHT)
+      else if (event_.button.button == SDL_BUTTON_RIGHT)
       {
         // On the main menu or top-level pause menus, this does nothing.
         if (this != main_menu && this != game_menu && this != worldmap_menu)
@@ -881,8 +874,8 @@ void Menu::event(SDL_Event& event)
       break;
 
     case SDL_MOUSEMOTION:
-      x = event.motion.x;
-      y = event.motion.y;
+      x = event_.motion.x;
+      y = event_.motion.y;
       if (!item.empty() && x > pos_x - get_width() / 2 && x < pos_x + get_width() / 2 && y > pos_y - get_height() / 2 && y < pos_y + get_height() / 2)
       {
         active_item = (y - (pos_y - get_height() / 2)) / 24;

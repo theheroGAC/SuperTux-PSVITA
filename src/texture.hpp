@@ -88,7 +88,7 @@ public:
 
   Surface(SDL_Surface* surf, bool use_alpha);
   Surface(std::string_view file, bool use_alpha);
-  Surface(std::string_view file, int x, int y, int w, int h, bool use_alpha);
+  Surface(std::string_view file, int x, int y, int w_, int h_, bool use_alpha);
   ~Surface();
 
   // Forbid copying to prevent double-free
@@ -98,9 +98,7 @@ public:
   void reload();
   void draw(float x, float y, Uint8 alpha = 255, bool update = false);
   void draw_bg(Uint8 alpha = 255, bool update = false);
-  void draw_part(float sx, float sy, float x, float y, float w, float h, Uint8 alpha = 255, bool update = false);
-  void draw_stretched(float x, float y, int w, int h, Uint8 alpha, bool update = false);
-  void resize(int w_, int h_);
+  void draw_part(float sx, float sy, float x, float y, float w_, float h_, Uint8 alpha = 255, bool update = false);
 
   static void reload_all();
   static void debug_check();
@@ -124,10 +122,15 @@ public:
 
   virtual int draw(float x, float y, Uint8 alpha, bool update) = 0;
   virtual int draw_bg(Uint8 alpha, bool update) = 0;
-  virtual int draw_part(float sx, float sy, float x, float y, float w, float h, Uint8 alpha, bool update) = 0;
-  virtual int draw_stretched(float x, float y, int w, int h, Uint8 alpha, bool update) = 0;
-  int resize(int w_, int h_);
+  virtual int draw_part(float sx, float sy, float x, float y, float w_, float h_, Uint8 alpha, bool update) = 0;
   SDL_Surface* get_sdl_surface() const;  // Avoid usage whenever possible
+
+#ifndef NOOPENGL
+  // Returns this implementation as a SurfaceOpenGL, or nullptr when it is not
+  // one. The batched draw path calls this once per quad, so it stands in for a
+  // dynamic_cast, which costs an out-of-line library call on every quad.
+  virtual SurfaceOpenGL* as_opengl() { return nullptr; }
+#endif
 };
 
 #ifndef NOOPENGL
@@ -147,13 +150,14 @@ public:
 
   SurfaceOpenGL(SDL_Surface* surf, bool use_alpha);
   SurfaceOpenGL(std::string_view file, bool use_alpha);
-  SurfaceOpenGL(std::string_view file, int x, int y, int w, int h, bool use_alpha);
-  virtual ~SurfaceOpenGL();
+  SurfaceOpenGL(std::string_view file, int x, int y, int w_, int h_, bool use_alpha);
+  ~SurfaceOpenGL() override;
 
   int draw(float x, float y, Uint8 alpha, bool update) override;
   int draw_bg(Uint8 alpha, bool update) override;
-  int draw_part(float sx, float sy, float x, float y, float w, float h, Uint8 alpha, bool update) override;
-  int draw_stretched(float x, float y, int sw, int sh, Uint8 alpha, bool update) override;
+  int draw_part(float sx, float sy, float x, float y, float w_, float h_, Uint8 alpha, bool update) override;
+
+  SurfaceOpenGL* as_opengl() override { return this; }
 
   static void reset_state();
   // Expose vertex array state management to other renderers (like Text)
@@ -174,13 +178,12 @@ public:
 
   SurfaceSDL(SDL_Surface *surf, bool use_alpha);
   SurfaceSDL(std::string_view file, bool use_alpha);
-  SurfaceSDL(std::string_view file, int x, int y, int w, int h, bool use_alpha);
-  virtual ~SurfaceSDL();
+  SurfaceSDL(std::string_view file, int x, int y, int w_, int h_, bool use_alpha);
+  ~SurfaceSDL() override;
 
   int draw(float x, float y, Uint8 alpha, bool update) override;
   int draw_bg(Uint8 alpha, bool update) override;
-  int draw_part(float sx, float sy, float x, float y, float w, float h, Uint8 alpha, bool update) override;
-  int draw_stretched(float x, float y, int sw, int sh, Uint8 alpha, bool update) override;
+  int draw_part(float sx, float sy, float x, float y, float w_, float h_, Uint8 alpha, bool update) override;
 };
 
 #endif /*SUPERTUX_TEXTURE_H*/

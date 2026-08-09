@@ -155,7 +155,7 @@ void SnowParticleSystem::draw(float scrollx, float scrolly, int layer, RenderBat
 
     if (batcher)
     {
-      batcher->add(particle.texture, x + scrollx, y, 0, 0);
+      batcher->add(particle.texture, x + scrollx, y);
     }
     else
     {
@@ -271,7 +271,7 @@ void CloudParticleSystem::draw(float scrollx, float scrolly, int layer, RenderBa
 
     if (batcher)
     {
-      batcher->add(particle.texture, x + scrollx, y, 0, 0);
+      batcher->add(particle.texture, x + scrollx, y);
     }
     else
     {

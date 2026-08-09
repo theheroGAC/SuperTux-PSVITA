@@ -55,26 +55,8 @@ LevelSubset::~LevelSubset()
 }
 
 /**
- * Creates and saves a new level subset.
- * @param subset_name The name of the subset to create.
- * Initializes and saves a new LevelSubset with the provided name.
- */
-void LevelSubset::create(std::string_view subset_name)
-{
-  Level new_lev;
-  LevelSubset new_subset;
-  new_subset.name = subset_name;
-  new_subset.title = "Unknown Title";
-  new_subset.description = "No description so far.";
-  new_subset.save();
-  new_lev.init_defaults();
-  // Level::save takes const std::string&, so we must convert
-  new_lev.save(std::string(subset_name), 1);
-}
-
-/**
  * Parses a Lisp object to extract LevelSubset information.
- * @param cursor Pointer to the Lisp object to parse.
+ * @param data Pointer to the Lisp object to parse.
  * Iterates through the object to extract the title and description.
  */
 void LevelSubset::parse(lisp_object_t* data)
@@ -86,7 +68,7 @@ void LevelSubset::parse(lisp_object_t* data)
 
 /**
  * Loads a LevelSubset from disk.
- * @param subset Pointer to the name of the subset to load.
+ * @param subset The name of the subset to load.
  * Searches for and loads the level subset's info file, then parses the content.
  */
 void LevelSubset::load(std::string_view subset)
@@ -104,7 +86,10 @@ void LevelSubset::load(std::string_view subset)
   // If the filename length exceeds the limit, log an error and return
   if (filename.string().length() >= 1020)
   {
-    fprintf(stderr, "Filename is too long: %s\n", filename.string().c_str());
+    if (verbose)
+    {
+      fprintf(stderr, "Filename is too long: %s\n", filename.string().c_str());
+    }
     return;
   }
 
@@ -113,7 +98,10 @@ void LevelSubset::load(std::string_view subset)
     FILE* fi = fopen(filename.string().c_str(), "r");
     if (fi == nullptr)
     {
-      perror(filename.string().c_str());  // System-generated error message
+      if (verbose)
+      {
+        perror(filename.string().c_str());  // System-generated error message
+      }
       return;
     }
 
@@ -123,14 +111,20 @@ void LevelSubset::load(std::string_view subset)
 
     if (root_obj->type == LISP_TYPE_EOF || root_obj->type == LISP_TYPE_PARSE_ERROR)
     {
-      printf("World: Parse Error in file %s\n", filename.string().c_str());
+      if (verbose)
+      {
+        printf("World: Parse Error in file %s\n", filename.string().c_str());
+      }
     }
     else
     {
       lisp_object_t* cur = lisp_car(root_obj);
       if (!lisp_symbol_p(cur))
       {
-        printf("World: Read error in %s\n", filename.string().c_str());
+        if (verbose)
+        {
+          printf("World: Read error in %s\n", filename.string().c_str());
+        }
       }
       else if (strcmp(lisp_symbol(cur), "supertux-level-subset") == 0)
       {
@@ -176,45 +170,6 @@ void LevelSubset::load(std::string_view subset)
     }
   }
   levels = i - 1;
-}
-
-/**
- * Saves the LevelSubset data to disk.
- * Saves information such as title, description, and levels to a file.
- */
-void LevelSubset::save()
-{
-  // Construct the filename path using std::filesystem
-  fs::path filename = fs::path("/levels") / name;
-
-  fcreatedir(filename.c_str());
-  filename = fs::path(st_dir) / "levels" / name / "info";
-  if (!fwriteable(filename.string().c_str()))
-  {
-    filename = fs::path(datadir) / "levels" / name / "info";
-  }
-
-  if (fwriteable(filename.string().c_str()))
-  {
-    FILE* fi = fopen(filename.string().c_str(), "w");
-    if (fi == nullptr)
-    {
-      perror(filename.string().c_str());
-    }
-
-    // Write header:
-    fprintf(fi, ";SuperTux-Level-Subset\n");
-    fprintf(fi, "(supertux-level-subset\n");
-
-    // Save title info:
-    fprintf(fi, "  (title \"%s\")\n", title.c_str());
-
-    // Save the description:
-    fprintf(fi, "  (description \"%s\")\n", description.c_str());
-
-    fprintf(fi, ")");
-    fclose(fi);
-  }
 }
 
 /**
@@ -326,13 +281,19 @@ int Level::load(std::string_view filename)
   lisp_object_t* root_obj = lisp_read_from_file(filename);
   if (!root_obj)
   {
-    std::cout << "Level: Couldn't load file: " << filename << std::endl;
+    if (verbose)
+    {
+      std::cout << "Level: Couldn't load file: " << filename << std::endl;
+    }
     return -1;
   }
 
   if (root_obj->type == LISP_TYPE_EOF || root_obj->type == LISP_TYPE_PARSE_ERROR)
   {
-    printf("World: Parse Error in file %s", std::string(filename).c_str());
+    if (verbose)
+    {
+      printf("World: Parse Error in file %s", std::string(filename).c_str());
+    }
     return -1;
   }
 
@@ -371,7 +332,7 @@ void Level::parseProperties(LispReader& reader)
   }
 
   time_left = 500;
-  if (!reader.read_int("time", &time_left))
+  if (!reader.read_int("time", &time_left) && verbose)
   {
     printf("Warning no time specified for level.\n");
   }
@@ -593,113 +554,6 @@ void Level::reload_bricks_and_coins()
 }
 
 /**
- * Saves level data to a file.
- * @param subset The subset name where the level is saved.
- * @param level The level number to save.
- * Writes all level data including tiles and objects to a file.
- */
-void Level::save(const std::string& subset, int level)
-{
-  // Construct the filename path using std::filesystem
-  fs::path filename = fs::path(st_dir) / "levels" / subset / ("level" + to_string(level) + ".stl");
-  if (!fwriteable(filename.string().c_str()))
-  {
-    filename = fs::path(datadir) / "levels" / subset / ("level" + to_string(level) + ".stl");
-  }
-
-  FILE* fi = fopen(filename.string().c_str(), "w");
-  if (fi == nullptr)
-  {
-    perror(filename.string().c_str());
-    st_shutdown();
-    exit(-1);
-  }
-
-  // Write header:
-  fprintf(fi, ";SuperTux-Level\n");
-  fprintf(fi, "(supertux-level\n");
-  fprintf(fi, "  (version %d)\n", 1);
-  fprintf(fi, "  (name \"%s\")\n", name.c_str());
-  fprintf(fi, "  (author \"%s\")\n", author.c_str());
-  fprintf(fi, "  (music \"%s\")\n", song_title.c_str());
-  fprintf(fi, "  (background \"%s\")\n", bkgd_image.c_str());
-  fprintf(fi, "  (particle_system \"%s\")\n", particle_system.c_str());
-  fprintf(fi, "  (bkgd_speed %d)\n", bkgd_speed);
-  fprintf(fi, "  (bkgd_red_top %d)\n", bkgd_top.red);
-  fprintf(fi, "  (bkgd_green_top %d)\n", bkgd_top.green);
-  fprintf(fi, "  (bkgd_blue_top %d)\n", bkgd_top.blue);
-  fprintf(fi, "  (bkgd_red_bottom %d)\n", bkgd_bottom.red);
-  fprintf(fi, "  (bkgd_green_bottom %d)\n", bkgd_bottom.green);
-  fprintf(fi, "  (bkgd_blue_bottom %d)\n", bkgd_bottom.blue);
-  fprintf(fi, "  (time %d)\n", time_left);
-  fprintf(fi, "  (width %d)\n", width);
-
-  if (back_scrolling)
-  {
-    fprintf(fi, "  (back_scrolling #t)\n");
-  }
-  else
-  {
-    fprintf(fi, "  (back_scrolling #f)\n");
-  }
-
-  fprintf(fi, "  (hor_autoscroll_speed %2.1f)\n", hor_autoscroll_speed);
-  fprintf(fi, "  (gravity %2.1f)\n", gravity);
-
-  fprintf(fi, "  (background-tm ");
-  for (int y = 0; y < SCREEN_HEIGHT_TILES; ++y)
-  {
-    for (int x = 0; x < width; ++x)
-    {
-      fprintf(fi, " %u ", bg_tiles[y * width + x]);
-    }
-  }
-  fprintf(fi, ")\n");
-
-  fprintf(fi, "  (interactive-tm ");
-  for (int y = 0; y < SCREEN_HEIGHT_TILES; ++y)
-  {
-    for (int x = 0; x < width; ++x)
-    {
-      fprintf(fi, " %u ", ia_tiles[y * width + x]);
-    }
-  }
-  fprintf(fi, ")\n");
-
-  fprintf(fi, "  (foreground-tm ");
-  for (int y = 0; y < SCREEN_HEIGHT_TILES; ++y)
-  {
-    for (int x = 0; x < width; ++x)
-    {
-      fprintf(fi, " %u ", fg_tiles[y * width + x]);
-    }
-  }
-  fprintf(fi, ")\n");
-
-  fprintf(fi, "(reset-points\n");
-  for (const auto& reset_point : reset_points)
-  {
-    fprintf(fi, "(point (x %d) (y %d))\n", reset_point.x, reset_point.y);
-  }
-  fprintf(fi, ")\n");
-
-  fprintf(fi, "(objects\n");
-
-  for (const auto& badguy : badguy_data)
-  {
-    fprintf(fi, "(%s (x %d) (y %d) (stay-on-platform %s))\n",
-      badguykind_to_string(badguy.kind).c_str(),
-      badguy.x,
-      badguy.y,
-      badguy.stay_on_platform ? "#t" : "#f");
-  }
-
-  fprintf(fi, ")\n");
-  fprintf(fi, ")\n");
-  fclose(fi);
-}
-
-/**
  * Cleans up the level, releasing resources.
  * Clears all tile vectors, reset points, and resets attributes to defaults.
  */
@@ -737,63 +591,6 @@ void Level::load_gfx()
     }
     img_bkgd = new Surface(fname.string().c_str(), false);
   }
-}
-
-/**
- * Loads a level-specific image.
- * @param ptexture Pointer to the Surface object to store the loaded image.
- * @param theme The theme name to load the image from.
- * @param file The filename of the image to load.
- * @param use_alpha Whether to use alpha channel for the image.
- */
-void Level::load_image(Surface** ptexture, const string& theme, const char* file, bool use_alpha)
-{
-  fs::path fname = fs::path(st_dir) / "themes" / theme / file;
-  if (!faccessible(fname.string().c_str()))
-  {
-    fname = fs::path(datadir) / "images/themes" / theme / file;
-  }
-
-  *ptexture = new Surface(fname.string().c_str(), use_alpha);
-}
-
-/**
- * Changes the size (width) of the level.
- * @param new_width The new width of the level
- * Resizes all tile layers to the new width, ensuring a minimum width of 21.
- */
-void Level::change_size(int new_width)
-{
-  if (new_width < MIN_LEVEL_WIDTH)
-  {
-    new_width = MIN_LEVEL_WIDTH;
-  }
-  if (new_width == width)
-  {
-    return;
-  }
-
-  std::vector<unsigned int> new_ia_tiles(new_width * SCREEN_HEIGHT_TILES, 0);
-  std::vector<unsigned int> new_bg_tiles(new_width * SCREEN_HEIGHT_TILES, 0);
-  std::vector<unsigned int> new_fg_tiles(new_width * SCREEN_HEIGHT_TILES, 0);
-
-  int min_width = (new_width < width) ? new_width : width;
-
-  for (int y = 0; y < SCREEN_HEIGHT_TILES; ++y)
-  {
-    for (int x = 0; x < min_width; ++x)
-    {
-      new_ia_tiles[y * new_width + x] = ia_tiles[y * width + x];
-      new_bg_tiles[y * new_width + x] = bg_tiles[y * width + x];
-      new_fg_tiles[y * new_width + x] = fg_tiles[y * width + x];
-    }
-  }
-
-  ia_tiles.swap(new_ia_tiles);
-  bg_tiles.swap(new_bg_tiles);
-  fg_tiles.swap(new_fg_tiles);
-
-  width = new_width;
 }
 
 /**
@@ -846,16 +643,6 @@ void Level::load_song()
   {
     level_song_fast = music_manager->load_music(song_path);
   }
-}
-
-/**
- * Frees the level's music resources.
- * Sets the current level music to the end level music.
- */
-void Level::free_song()
-{
-  level_song = level_end_song;
-  level_song_fast = level_end_song;
 }
 
 /**

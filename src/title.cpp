@@ -41,6 +41,7 @@
 #include "scene.hpp"
 #include "player.hpp"
 #include <math.h>
+#include <memory>
 #include "tile.hpp"
 #include "resources.hpp"
 #include "worldmap.hpp"
@@ -80,41 +81,36 @@ static StringList worldmap_list;  // List of available world maps
   static double fractional_increment = 0.0; // Static variable to manage the fractional increment
 #endif
 
-GameSession* session = nullptr;  // Pointer to the current game session
+static std::unique_ptr<GameSession> session;  // The current demo session
 
 /**
  * Returns the current game session.
- * @return GameSession* Pointer to the current game session.
+ * @return GameSession* Non-owning pointer to the current game session.
  */
 GameSession* getSession()
 {
-  return session;
+  return session.get();
 }
 
 /**
  * Deletes the current demo session, freeing associated resources.
- * Ensures that all pointers are set to null after deletion to avoid dangling pointers.
  */
 void deleteDemo()
 {
-  if (session)
-  {
-    delete session;
-    session = nullptr;
-  }
+  session.reset();
 }
 
 /**
  * Creates a new demo session.
  * The demo session is loaded from a predefined menu level.
+ * Any existing demo is destroyed first to free up resources.
  */
 void createDemo()
 {
-  // First, delete any existing demo to free up resources
+  // Reset first so the old session (and its lisp pool data) is freed
+  // before the new one starts allocating.
   deleteDemo();
-
-  // Create a new game session for the demo
-  session = new GameSession(datadir + "/levels/misc/menu.stl", 0, ST_GL_DEMO_GAME);
+  session = std::make_unique<GameSession>(datadir + "/levels/misc/menu.stl", 0, ST_GL_DEMO_GAME);
 }
 
 /**
@@ -277,7 +273,10 @@ void check_contrib_subset_menu()
   {
     if (contrib_subset_menu->get_item_by_id(index).kind == MN_ACTION)
     {
-      std::cout << "Starting level: " << index << std::endl;
+      if (verbose)
+      {
+        std::cout << "Starting level: " << index << std::endl;
+      }
       GameSession session(current_contrib_subset, index, ST_GL_PLAY);
       session.run();
       player_status.reset();
@@ -380,12 +379,11 @@ static void processTitleInput()
       int slot = load_game_menu->get_active_item_id();
 
       // Call the dialog, passing the correct background surface.
-      Surface* dialog_background = new Surface(datadir + "/images/title/background.jpg", false);
-      if (confirm_dialog("Are you sure you want to delete slot " + std::to_string(slot) + "?", dialog_background))
+      auto dialog_background = std::make_unique<Surface>(datadir + "/images/title/background.jpg", false);
+      if (confirm_dialog("Are you sure you want to delete slot " + std::to_string(slot) + "?", dialog_background.get()))
       {
         remove((std::string(st_save_dir) + "/slot" + std::to_string(slot) + ".stsg").c_str());
       }
-      delete dialog_background; // Clean up the temporary surface.
 
       // After the action, refresh the save list and return to the main menu.
       update_load_save_game_menu(load_game_menu);
@@ -400,7 +398,8 @@ static void processTitleInput()
       Menu::current()->event(event);
     }
 
-    // FIXME: QUIT signal should be handled more generically, not locally
+    // Drop the menu so this loop's own condition ends the title screen.
+    // quit_requested carries the request the rest of the way out of main().
     if (event.type == SDL_QUIT)
     {
       Menu::set_current(0);
@@ -449,9 +448,10 @@ static void handleMenuActions()
       {
         createDemo();
         loadsounds();
-#ifdef DEBUG
-        printf("loaded demo, load sounds\n");
-#endif
+        if (verbose)
+        {
+          printf("loaded demo, load sounds\n");
+        }
         // FIXME: shouldn't be needed if GameSession doesn't relay on global variables
         // reset tux
         scroll_x = 0;
@@ -562,7 +562,7 @@ void title(void)
   loadsounds();
 
   // Main loop for the title screen
-  while (Menu::current())
+  while (Menu::current() && !quit_requested)
   {
     // Check if too much time has passed since the last update
     if ((update_time - last_update_time) > 1000)
@@ -583,7 +583,7 @@ void title(void)
     // Draw the background and demo BEFORE handling menu actions
     clearscreen(0, 0, 0); // Clear screen to prevent ghosting/freezing
     bkg_title->draw_bg();
-    draw_demo(session, frame_ratio);
+    draw_demo(session.get(), frame_ratio);
 
     handleMenuActions();
 

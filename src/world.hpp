@@ -62,11 +62,31 @@ private:
   // Helper function to draw a layer of tiles (bg, ia, or fg)
   void draw_tile_layer(RenderBatcher* batcher, const unsigned int* tile_data, bool is_interactive_layer = false);
 
+  // The object passes, run in this order by draw()
+  void draw_bullets(RenderBatcher* batcher);
+  void draw_upgrades(RenderBatcher* batcher);
+  void draw_bouncy_distros(RenderBatcher* batcher);
+  void draw_broken_bricks(RenderBatcher* batcher);
+  void draw_floating_scores();
+
+  void flush_batch();
+
   // Helper function to clean up all objects marked for removal
   void cleanup_dead_objects();
 
+  // The collision passes, run in this order by collision_handler()
+  void rebuild_collision_grid();
+  void collide_bullets_with_badguys();
+  void collide_special_colliders();
+  void collide_kicked_iceblock(BadGuy* iceblock);
+  void collide_special_with_nearby(BadGuy* special);
+  void collide_specials_with_each_other();
+  void collide_normal_badguys();
+  void collide_player_with_badguys();
+  void collide_player_with_upgrades();
+
   template<typename T, typename Func>
-  void draw_pooled_objects(ObjectPool<T>& pool, Func draw_lambda)
+  static void draw_pooled_objects(ObjectPool<T>& pool, Func draw_lambda)
   {
     const auto& pool_data = pool.get_pool_data();
     for (size_t index : pool.get_active_indices())
@@ -109,7 +129,6 @@ public:
   explicit World(std::string_view filename);
   World(std::string_view subset, int level_nr);
 
-  World();
   ~World();
 
   void activate_world();

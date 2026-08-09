@@ -104,20 +104,22 @@ public:
   enum HurtMode { KILL, SHRINK };
 
   // Public member variables for player state
-  player_input_type input;                  // Current input state from keyboard/joystick
-  bool got_coffee;                          // True if player has the fire flower power-up
-  int size;                                 // Player's size (SMALL or BIG)
-  bool duck;                                // True if player is currently ducking
-  bool holding_something;                   // True if player is carrying an object (like Mr. Ice Block)
-  DyingType dying;                          // The player's current dying state
-  Direction dir;                            // The direction the player is facing
-  Direction old_dir;                        // The direction the player was facing last frame
-  bool jumping;                             // True if the jump key is currently held down during a jump
-  bool can_jump;                            // True if the player is able to initiate a new jump
-  int frame_;                               // Sub-frame for animation sequences
-  int frame_main;                           // Main frame for animation sequences
-  base_type previous_base;                  // Position at the start of the current frame (for collision)
-  base_type post_physics_base;
+  // In-class initializers give a Player a defined state from construction.
+  // init() overwrites all of these once a level is known.
+  player_input_type input{};                // Current input state from keyboard/joystick
+  bool got_coffee = false;                  // True if player has the fire flower power-up
+  int size = SMALL;                         // Player's size (SMALL or BIG)
+  bool duck = false;                        // True if player is currently ducking
+  bool holding_something = false;           // True if player is carrying an object (like Mr. Ice Block)
+  DyingType dying = DYING_NOT;              // The player's current dying state
+  Direction dir = RIGHT;                    // The direction the player is facing
+  Direction old_dir = RIGHT;                // The direction the player was facing last frame
+  bool jumping = false;                     // True if the jump key is currently held down during a jump
+  bool can_jump = true;                     // True if the player is able to initiate a new jump
+  int frame_ = 0;                           // Sub-frame for animation sequences
+  int frame_main = 0;                       // Main frame for animation sequences
+  base_type previous_base{};                // Position at the start of the current frame (for collision)
+  base_type post_physics_base{};
 
   // Timers for various player states.
   Timer invincible_timer;
@@ -131,14 +133,14 @@ public:
 
 private:
   // Collision caches
-  bool m_on_ground_cache;
-  bool m_ceiling_cache;
+  bool m_on_ground_cache = false;
+  bool m_ceiling_cache = false;
 
 public:
   void init();                              // Initializes player state for a new level
   int key_event(SDL_Keycode key, int state);     // Processes a keyboard event
   void level_begin();                       // Resets player state for a level loop (e.g., in menu demo)
-  void action(float frame_ratio);          // Main update function, called once per frame
+  void action(float frame_ratio) override; // Main update function, called once per frame
   void updatePhysics(float deltaTime);
   void handle_input();                      // Main input handler, dispatches to sub-handlers
   void grabdistros();                       // Checks for and collects distros (coins)
@@ -146,15 +148,13 @@ public:
   void draw(RenderBatcher* batcher);        // Draws the player sprite (unified for SDL/OpenGL)
   void collision(void* p_c_object, int c_object); // Handles collisions with other objects
   void kill(HurtMode mode);                 // Kills or shrinks the player
-  void is_dying();                          // Resets the player's dying state
   bool is_dead() const;                     // Checks if the player is considered dead (off-screen)
-  void player_remove_powerups();            // Removes all power-ups from the player
   void check_bounds(bool back_scrolling, bool hor_autoscroll); // Enforces level boundaries
   bool on_ground() const;                   // Checks if the player is on the ground
   bool under_solid() const;                 // Checks if the player is under a solid block
   void grow();                              // Makes the player grow to BIG state
   void jump_of_badguy(BadGuy* badguy);      // Bounces the player off a badguy
-  std::string type() { return "Player"; };  // Returns the object type as a string
+  std::string type() override { return "Player"; };  // Returns the object type as a string
 
 private:
   // Private Helper Methods

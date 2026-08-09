@@ -252,12 +252,12 @@ Surface::Surface(std::string_view file, bool use_alpha)
  * @param file The path to the image file.
  * @param x The x-coordinate of the part to load.
  * @param y The y-coordinate of the part to load.
- * @param w The width of the part to load.
- * @param h The height of the part to load.
+ * @param w_ The width of the part to load.
+ * @param h_ The height of the part to load.
  * @param use_alpha Whether to use alpha transparency.
  */
-Surface::Surface(std::string_view file, int x, int y, int w, int h, bool use_alpha)
-  : data(file, x, y, w, h, use_alpha), w(0), h(0)
+Surface::Surface(std::string_view file, int x, int y, int w_, int h_, bool use_alpha)
+  : data(file, x, y, w_, h_, use_alpha), w(0), h(0)
 {
   init_impl();
 }
@@ -277,21 +277,22 @@ void Surface::reload()
  */
 Surface::~Surface()
 {
-#ifdef DEBUG
-  bool found = false;
-  for (auto i = surfaces.begin(); i != surfaces.end(); ++i)
+  if (verbose)
   {
-    if (*i == this)
+    bool found = false;
+    for (auto i = surfaces.begin(); i != surfaces.end(); ++i)
     {
-      found = true;
-      break;
+      if (*i == this)
+      {
+        found = true;
+        break;
+      }
+    }
+    if (!found)
+    {
+      printf("Error: Surface freed twice!!!\n");
     }
   }
-  if (!found)
-  {
-    printf("Error: Surface freed twice!!!\n");
-  }
-#endif
   surfaces.remove(this);
 }
 
@@ -311,9 +312,12 @@ void Surface::reload_all()
  */
 void Surface::debug_check()
 {
-  for (auto& surface : surfaces)
+  if (verbose)
   {
-    printf("Surface not freed: T:%d F:%s.\n", surface->data.type, surface->data.file.c_str());
+    for (auto& surface : surfaces)
+    {
+      printf("Surface not freed: T:%d F:%s.\n", surface->data.type, surface->data.file.c_str());
+    }
   }
 }
 
@@ -357,54 +361,16 @@ void Surface::draw_bg(Uint8 alpha, bool update)
  * @param sy The source y-coordinate.
  * @param x The destination x-coordinate.
  * @param y The destination y-coordinate.
- * @param w The width of the portion.
- * @param h The height of the portion.
+ * @param w_ The width of the portion.
+ * @param h_ The height of the portion.
  * @param alpha The alpha transparency.
  * @param update Whether to update the screen after drawing.
  */
-void Surface::draw_part(float sx, float sy, float x, float y, float w, float h, Uint8 alpha, bool update)
+void Surface::draw_part(float sx, float sy, float x, float y, float w_, float h_, Uint8 alpha, bool update)
 {
   if (impl)
   {
-    if (impl->draw_part(sx, sy, x, y, w, h, alpha, update) == -2)
-    {
-      reload();
-    }
-  }
-}
-
-/**
- * Draws the surface stretched to the specified width and height.
- * @param x The x-coordinate.
- * @param y The y-coordinate.
- * @param w The width to stretch to.
- * @param h The height to stretch to.
- * @param alpha The alpha transparency.
- * @param update Whether to update the screen after drawing.
- */
-void Surface::draw_stretched(float x, float y, int w, int h, Uint8 alpha, bool update)
-{
-  if (impl)
-  {
-    if (impl->draw_stretched(x, y, w, h, alpha, update) == -2)
-    {
-      reload();
-    }
-  }
-}
-
-/**
- * Resizes the surface to the specified width and height.
- * @param w_ The new width.
- * @param h_ The new height.
- */
-void Surface::resize(int w_, int h_)
-{
-  if (impl)
-  {
-    w = w_;
-    h = h_;
-    if (impl->resize(w_, h_) == -2)
+    if (impl->draw_part(sx, sy, x, y, w_, h_, alpha, update) == -2)
     {
       reload();
     }
@@ -541,25 +507,6 @@ SDL_Surface* SurfaceImpl::get_sdl_surface() const
   return sdl_surface;
 }
 
-/**
- * Resizes the surface to the specified width and height.
- * @param w_ The new width.
- * @param h_ The new height.
- * @return 0 on success, or -2 if the surface needs to be reloaded.
- */
-int SurfaceImpl::resize(int w_, int h_)
-{
-  w = w_;
-  h = h_;
-  SDL_Rect dest;
-  dest.x = 0;
-  dest.y = 0;
-  dest.w = w;
-  dest.h = h;
-  int ret = SDL_SoftStretch(sdl_surface, NULL, sdl_surface, &dest);
-  return ret;
-}
-
 #ifndef NOOPENGL
 /**
  * Constructor for SurfaceOpenGL.
@@ -596,18 +543,18 @@ SurfaceOpenGL::SurfaceOpenGL(std::string_view file, bool use_alpha)
  * @param file The path to the image file.
  * @param x The x-coordinate of the part to load.
  * @param y The y-coordinate of the part to load.
- * @param w The width of the part to load.
- * @param h The height of the part to load.
+ * @param w_ The width of the part to load.
+ * @param h_ The height of the part to load.
  * @param use_alpha Whether to use alpha transparency.
  */
-SurfaceOpenGL::SurfaceOpenGL(std::string_view file, int x, int y, int w, int h, bool use_alpha)
+SurfaceOpenGL::SurfaceOpenGL(std::string_view file, int x, int y, int w_, int h_, bool use_alpha)
   : tex_w_allocated(0.0f), tex_h_allocated(0.0f)
 {
-  sdl_surface = sdl_surface_part_from_file(file, x, y, w, h, use_alpha);
+  sdl_surface = sdl_surface_part_from_file(file, x, y, w_, h_, use_alpha);
   create_gl(sdl_surface, &gl_texture);
 
-  this->w = sdl_surface->w;
-  this->h = sdl_surface->h;
+  w = sdl_surface->w;
+  h = sdl_surface->h;
 }
 
 /**
@@ -835,7 +782,6 @@ void SurfaceOpenGL::setup_gl_state(Uint8 alpha)
 
 /**
  * Helper function to render a textured quad with OpenGL.
- * This eliminates code duplication between draw() and draw_stretched().
  * @param x The x-coordinate.
  * @param y The y-coordinate.
  * @param width The width of the quad to render.
@@ -949,13 +895,13 @@ int SurfaceOpenGL::draw_bg(Uint8 alpha, bool update)
  * @param sy The source y-coordinate.
  * @param x The destination x-coordinate.
  * @param y The destination y-coordinate.
- * @param w The width of the portion.
- * @param h The height of the portion.
+ * @param w_ The width of the portion.
+ * @param h_ The height of the portion.
  * @param alpha The alpha transparency.
  * @param update Whether to update the screen after drawing.
  * @return 0 on success, or -2 if the surface needs to be reloaded.
  */
-int SurfaceOpenGL::draw_part(float sx, float sy, float x, float y, float w, float h, Uint8 alpha, bool update)
+int SurfaceOpenGL::draw_part(float sx, float sy, float x, float y, float w_, float h_, Uint8 alpha, bool update)
 {
   x = floorf(x + 0.5f);
   y = floorf(y + 0.5f);
@@ -967,16 +913,16 @@ int SurfaceOpenGL::draw_part(float sx, float sy, float x, float y, float w, floa
 
   GLfloat vertices[] = {
     x, y,
-    x + w, y,
-    x + w, y + h,
-    x, y + h
+    x + w_, y,
+    x + w_, y + h_,
+    x, y + h_
   };
 
   GLfloat texcoords[] = {
     sx / pw, sy / ph,
-    (sx + w) / pw, sy / ph,
-    (sx + w) / pw, (sy + h) / ph,
-    sx / pw, (sy + h) / ph
+    (sx + w_) / pw, sy / ph,
+    (sx + w_) / pw, (sy + h_) / ph,
+    sx / pw, (sy + h_) / ph
   };
 
   SurfaceOpenGL::enable_vertex_arrays();
@@ -990,26 +936,6 @@ int SurfaceOpenGL::draw_part(float sx, float sy, float x, float y, float w, floa
   return 0;
 }
 
-/**
- * Draws the OpenGL surface stretched to the specified width and height.
- * @param x The x-coordinate.
- * @param y The y-coordinate.
- * @param sw The width to stretch to.
- * @param sh The height to stretch to.
- * @param alpha The alpha transparency.
- * @param update Whether to update the screen after drawing.
- * @return 0 on success, or -2 if the surface needs to be reloaded.
- */
-int SurfaceOpenGL::draw_stretched(float x, float y, int sw, int sh, Uint8 alpha, bool update)
-{
-  setup_gl_state(alpha);
-  render_textured_quad(x, y, static_cast<float>(sw), static_cast<float>(sh),
-                       static_cast<float>(this->w), static_cast<float>(this->h),
-                       tex_w_allocated, tex_h_allocated);
-
-  (void)update;
-  return 0;
-}
 #endif
 
 // ----------------------------------------------------------------------------
@@ -1027,8 +953,11 @@ SurfaceSDL::SurfaceSDL(std::string_view file, bool use_alpha)
   texture = SDL_CreateTextureFromSurface(renderer, sdl_surface);
   if (!texture)
   {
-    std::cerr << "Failed to create texture from " << file << ": "
-              << SDL_GetError() << "\n";
+    if (verbose)
+    {
+      std::cerr << "Failed to create texture from " << file << ": "
+                << SDL_GetError() << "\n";
+    }
   }
   w = sdl_surface->w;
   h = sdl_surface->h;
@@ -1039,21 +968,24 @@ SurfaceSDL::SurfaceSDL(std::string_view file, bool use_alpha)
  * @param file The path to the image file.
  * @param x The x-coordinate of the part to load.
  * @param y The y-coordinate of the part to load.
- * @param w The width of the part to load.
- * @param h The height of the part to load.
+ * @param w_ The width of the part to load.
+ * @param h_ The height of the part to load.
  * @param use_alpha Whether to use alpha transparency.
  */
-SurfaceSDL::SurfaceSDL(std::string_view file, int x, int y, int w, int h, bool use_alpha)
+SurfaceSDL::SurfaceSDL(std::string_view file, int x, int y, int w_, int h_, bool use_alpha)
 {
-  sdl_surface = sdl_surface_part_from_file(file, x, y, w, h, use_alpha);
+  sdl_surface = sdl_surface_part_from_file(file, x, y, w_, h_, use_alpha);
   texture = SDL_CreateTextureFromSurface(renderer, sdl_surface);
   if (!texture)
   {
-    std::cerr << "Failed to create texture part from " << file << ": "
-              << SDL_GetError() << "\n";
+    if (verbose)
+    {
+      std::cerr << "Failed to create texture part from " << file << ": "
+                << SDL_GetError() << "\n";
+    }
   }
-  this->w = sdl_surface->w;
-  this->h = sdl_surface->h;
+  w = sdl_surface->w;
+  h = sdl_surface->h;
 }
 
 SurfaceSDL::SurfaceSDL(SDL_Surface *surf, bool use_alpha)
@@ -1133,55 +1065,28 @@ int SurfaceSDL::draw_bg(Uint8 alpha, bool update)
  * @param sy The source y-coordinate.
  * @param x The destination x-coordinate.
  * @param y The destination y-coordinate.
- * @param w The width of the portion.
- * @param h The height of the portion.
+ * @param w_ The width of the portion.
+ * @param h_ The height of the portion.
  * @param alpha The alpha transparency.
  * @param update Whether to update the screen after drawing.
  * @return 0 on success, or -2 if the surface needs to be reloaded.
  */
-int SurfaceSDL::draw_part(float sx, float sy, float x, float y, float w, float h, Uint8 alpha, bool update)
+int SurfaceSDL::draw_part(float sx, float sy, float x, float y, float w_, float h_, Uint8 alpha, bool update)
 {
   SDL_Rect src;
   SDL_Rect dst;
   src.x = (int)sx;
   src.y = (int)sy;
-  src.w = (int)w;
-  src.h = (int)h;
+  src.w = (int)w_;
+  src.h = (int)h_;
 
   dst.x = (int)x;
   dst.y = (int)y;
-  dst.w = (int)w;
-  dst.h = (int)h;
+  dst.w = (int)w_;
+  dst.h = (int)h_;
 
   SDL_SetTextureAlphaMod(texture, alpha);
   SDL_RenderCopy(renderer, texture, &src, &dst);
-
-  if (update == UPDATE)
-    SDL_RenderPresent(renderer);
-
-  return 0;
-}
-
-/**
- * Draws the SDL surface stretched to the specified width and height.
- * @param x The x-coordinate.
- * @param y The y-coordinate.
- * @param sw The width to stretch to.
- * @param sh The height to stretch to.
- * @param alpha The alpha transparency.
- * @param update Whether to update the screen after drawing.
- * @return 0 on success, or -2 if the surface needs to be reloaded.
- */
-int SurfaceSDL::draw_stretched(float x, float y, int sw, int sh, Uint8 alpha, bool update)
-{
-  SDL_Rect dst;
-  dst.x = (int)x;
-  dst.y = (int)y;
-  dst.w = sw;
-  dst.h = sh;
-
-  SDL_SetTextureAlphaMod(texture, alpha);
-  SDL_RenderCopy(renderer, texture, NULL, &dst);
 
   if (update == UPDATE)
     SDL_RenderPresent(renderer);

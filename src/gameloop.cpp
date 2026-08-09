@@ -73,10 +73,6 @@ GameSession::GameSession(const std::string& subset_, int levelnb_, int mode):
   frame_timer.init(true);
 
   restart_level();
-
-#ifdef TSCONTROL
-  old_mouse_y = screen->w;
-#endif
 }
 
 /**
@@ -129,7 +125,7 @@ void GameSession::restart_level()
       world->get_tux()->old_base = world->get_tux()->base;
       world->get_tux()->previous_base = world->get_tux()->base;
 
-      if (collision_object_map(world->get_tux()->base))
+      if (verbose && collision_object_map(world->get_tux()->base))
       {
         std::cout << "Warning: reset point inside a wall.\n";
       }
@@ -158,6 +154,13 @@ void GameSession::restart_level()
 GameSession::~GameSession()
 {
   lisp_reset_pool(); // Free all memory used by the level data
+
+  // Don't leave the static accessor dangling. Guard against a newer
+  // session having already replaced us.
+  if (current_ == this)
+  {
+    current_ = nullptr;
+  }
 }
 
 /**
@@ -253,6 +256,417 @@ void GameSession::toggle_pause()
 }
 
 /**
+ * Applies a debug shortcut key, which does nothing outside debug mode.
+ * @param key The key that was released.
+ * @param tux The player the shortcut acts on.
+ */
+static void handle_debug_key(SDL_Keycode key, Player& tux)
+{
+  if (!debug_mode)
+  {
+    return;
+  }
+
+  switch (key)
+  {
+    case SDLK_TAB:
+      tux.size = !tux.size;
+      tux.base.height = (tux.size == BIG) ? (TILE_SIZE * 2) : TILE_SIZE;
+      break;
+
+    case SDLK_END:
+      player_status.distros += 50;
+      break;
+
+    case SDLK_DELETE:
+      tux.got_coffee = 1;
+      break;
+
+    case SDLK_INSERT:
+      tux.invincible_timer.start(TUX_INVINCIBLE_TIME);
+      break;
+
+    case SDLK_l:
+      --player_status.lives;
+      break;
+
+    case SDLK_s:
+      player_status.score += 1000;
+      break;
+
+    default:
+      break;
+  }
+}
+
+/**
+ * Steers Tux from a joystick hat, after any rotation has been applied.
+ * @param hat_value The adjusted hat direction.
+ * @param tux The player to steer.
+ */
+static void handle_joystick_hat(Uint8 hat_value, Player& tux)
+{
+  if (hat_value == SDL_HAT_RIGHT || hat_value == SDL_HAT_RIGHTUP)
+  {
+    tux.input.left  = UP;
+    tux.input.right = DOWN;
+  }
+
+  if (hat_value == SDL_HAT_LEFT || hat_value == SDL_HAT_LEFTUP)
+  {
+    tux.input.left  = DOWN;
+    tux.input.right = UP;
+  }
+
+  if (hat_value == SDL_HAT_CENTERED)
+  {
+    tux.input.left  = UP;
+    tux.input.right = UP;
+  }
+
+  const bool ducking = (hat_value == SDL_HAT_DOWN ||
+                        hat_value == SDL_HAT_LEFTDOWN ||
+                        hat_value == SDL_HAT_RIGHTDOWN);
+  tux.input.down = ducking ? DOWN : UP;
+}
+
+/**
+ * Steers Tux from a joystick axis, honouring the configured dead zone.
+ * @param jaxis The axis motion event.
+ * @param tux The player to steer.
+ */
+static void handle_joystick_axis(const SDL_JoyAxisEvent& jaxis, Player& tux)
+{
+  if (jaxis.axis == joystick_keymap.x_axis)
+  {
+    if (jaxis.value < -joystick_keymap.dead_zone)
+    {
+      tux.input.left  = DOWN;
+      tux.input.right = UP;
+    }
+    else if (jaxis.value > joystick_keymap.dead_zone)
+    {
+      tux.input.left  = UP;
+      tux.input.right = DOWN;
+    }
+    else
+    {
+      tux.input.left  = DOWN;
+      tux.input.right = DOWN;
+    }
+  }
+  else if (jaxis.axis == joystick_keymap.y_axis)
+  {
+    if (jaxis.value > joystick_keymap.dead_zone)
+    {
+      tux.input.down = DOWN;
+    }
+    else if (jaxis.value < -joystick_keymap.dead_zone)
+    {
+      tux.input.down = UP;
+    }
+    else
+    {
+      tux.input.down = UP;
+    }
+  }
+}
+
+/**
+ * Acts on a key released during play, outside of Tux's own key handling.
+ * @param key The key that was released.
+ * @param tux The player the key acts on.
+ */
+void GameSession::handle_key_up(SDL_Keycode key, Player& tux)
+{
+  switch (key)
+  {
+    case SDLK_p:
+    {
+      toggle_pause();
+      break;
+    }
+
+    case SDLK_f:
+    {
+      debug_fps = !debug_fps;
+      break;
+    }
+
+    default:
+    {
+      handle_debug_key(key, tux);
+      break;
+    }
+  }
+}
+
+/**
+ * Acts on a joystick button being pressed during play.
+ * @param button The button index reported by SDL.
+ * @param tux The player the button acts on.
+ */
+void GameSession::handle_joystick_button_down(Uint8 button, Player& tux)
+{
+  int jump_btn = swap_x_and_o ? 1 : 0;
+  int fire_btn = swap_x_and_o ? 0 : 1;
+
+  if (button == jump_btn || button == 3)
+  {
+    tux.input.up = DOWN;
+  }
+  else if (button == fire_btn || button == 2)
+  {
+    tux.input.fire = DOWN;
+  }
+  else if (button == 6)
+  {
+    on_escape_press();
+  }
+}
+
+/**
+ * Acts on a joystick button being released during play.
+ * @param button The button index reported by SDL.
+ * @param tux The player the button acts on.
+ */
+void GameSession::handle_joystick_button_up(Uint8 button, Player& tux)
+{
+  int jump_btn = swap_x_and_o ? 1 : 0;
+  int fire_btn = swap_x_and_o ? 0 : 1;
+
+  if (button == jump_btn || button == 3)
+  {
+    tux.input.up = UP;
+  }
+  else if (button == fire_btn || button == 2)
+  {
+    tux.input.fire = UP;
+  }
+  else if (button == 5)
+  {
+    toggle_pause();
+  }
+}
+
+/**
+ * Handles a keyboard event during play.
+ * @param event The event to inspect.
+ * @param tux The player the event acts on.
+ * @return bool True when the event was a keyboard event.
+ */
+bool GameSession::handle_keyboard_event(const SDL_Event& event, Player& tux)
+{
+  switch (event.type)
+  {
+    case SDL_KEYDOWN:
+    {
+      if (!tux.key_event(event.key.keysym.sym, DOWN)
+          && event.key.keysym.sym == SDLK_ESCAPE)
+      {
+        on_escape_press();
+      }
+
+      break;
+    }
+
+    case SDL_KEYUP:
+    {
+      if (!tux.key_event(event.key.keysym.sym, UP))
+      {
+        handle_key_up(event.key.keysym.sym, tux);
+      }
+
+      break;
+    }
+
+    default:
+    {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+/**
+ * Handles a joystick event during play.
+ * @param event The event to inspect.
+ * @param tux The player the event acts on.
+ * @return bool True when the event was a joystick event.
+ */
+bool GameSession::handle_joystick_event(const SDL_Event& event, Player& tux)
+{
+  switch (event.type)
+  {
+    case SDL_JOYHATMOTION:
+    {
+      // Apply rotation if needed
+      handle_joystick_hat(adjust_joystick_hat(event.jhat.value), tux);
+      break;
+    }
+
+    case SDL_JOYAXISMOTION:
+    {
+      handle_joystick_axis(event.jaxis, tux);
+      break;
+    }
+
+    case SDL_JOYBUTTONDOWN:
+    {
+      handle_joystick_button_down(event.jbutton.button, tux);
+      break;
+    }
+
+    case SDL_JOYBUTTONUP:
+    {
+      handle_joystick_button_up(event.jbutton.button, tux);
+      break;
+    }
+
+    default:
+    {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+
+/**
+ * Routes one event to the input device that owns it during play.
+ * @param event The event to dispatch.
+ * @param tux The player the event acts on.
+ */
+void GameSession::handle_gameplay_event(const SDL_Event& event, Player& tux)
+{
+  if (event.type == SDL_QUIT)
+  {
+    exit_status = ES_LEVEL_ABORT;
+    return;
+  }
+
+  if (handle_keyboard_event(event, tux))
+  {
+    return;
+  }
+
+  handle_joystick_event(event, tux);
+}
+
+/**
+ * Handles the few events still accepted while the end sequence plays.
+ * @param event The event to inspect.
+ */
+void GameSession::handle_endsequence_event(const SDL_Event& event)
+{
+  switch (event.type)
+  {
+    case SDL_QUIT: // Quit event
+    {
+      exit_status = ES_LEVEL_ABORT;
+      break;
+    }
+
+    case SDL_KEYDOWN: // Handle key down events
+    {
+      if (event.key.keysym.sym == SDLK_ESCAPE)
+      {
+        on_escape_press();
+      }
+
+      break;
+    }
+
+    case SDL_JOYBUTTONDOWN:
+    {
+      if (event.jbutton.button == 6 || event.jbutton.button == 19)
+      {
+        on_escape_press();
+      }
+
+      break;
+    }
+
+    default:
+    {
+      break;
+    }
+  }
+}
+
+/**
+ * Drives Tux to the right and limits input to final actions while the end
+ * sequence plays.
+ */
+void GameSession::process_endsequence_events()
+{
+  Player& tux = *world->get_tux();
+
+  tux.input.fire  = UP;
+  tux.input.left  = UP;
+  tux.input.right = DOWN;
+  tux.input.down  = UP;
+
+  if (last_x_pos == tux.base.x)
+  {
+    tux.input.up = DOWN;
+  }
+  else
+  {
+    tux.input.up = UP;
+  }
+
+  last_x_pos = tux.base.x;
+
+  SDL_Event event;
+  while (st_poll_event(&event))
+  {
+    // Handle menu events during the end sequence
+    if (Menu::current())
+    {
+      Menu::current()->event(event);
+      if (!Menu::current())
+      {
+        Ticks::pause_stop();
+      }
+    }
+
+    handle_endsequence_event(event);
+  }
+}
+
+/**
+ * Pumps input during normal play, giving the menu first refusal on every
+ * event before Tux sees it.
+ */
+void GameSession::process_gameplay_events()
+{
+  if (!Menu::current() && !game_pause)
+  {
+    Ticks::pause_stop();
+  }
+
+  SDL_Event event;
+  while (st_poll_event(&event))
+  {
+    if (Menu::current())
+    {
+      Menu::current()->event(event);
+      if (!Menu::current())
+      {
+        Ticks::pause_stop();
+      }
+    }
+    else
+    {
+      handle_gameplay_event(event, *world->get_tux());
+    }
+  }
+}
+
+/**
  * Processes all SDL events during gameplay.
  * Handles keyboard, joystick, and other input events, including game pauses and menu triggers.
  */
@@ -261,410 +675,11 @@ void GameSession::process_events()
   // If the end sequence is active, limit input to final actions
   if (end_sequence != NO_ENDSEQUENCE)
   {
-    Player& tux = *world->get_tux();
-
-    tux.input.fire  = UP;
-    tux.input.left  = UP;
-    tux.input.right = DOWN;
-    tux.input.down  = UP;
-
-    if (last_x_pos == tux.base.x)
-    {
-      tux.input.up = DOWN;
-    }
-    else
-    {
-      tux.input.up = UP;
-    }
-
-    last_x_pos = tux.base.x;
-
-    SDL_Event event;
-    while (st_poll_event(&event))
-    {
-      // Handle menu events during the end sequence
-      if (Menu::current())
-      {
-        Menu::current()->event(event);
-        if (!Menu::current())
-        {
-          Ticks::pause_stop();
-        }
-      }
-
-      switch (event.type)
-      {
-        case SDL_QUIT: // Quit event
-        {
-          exit_status = ES_LEVEL_ABORT;
-          break;
-        }
-
-        case SDL_KEYDOWN: // Handle key down events
-        {
-          if (event.key.keysym.sym == SDLK_ESCAPE)
-          {
-            on_escape_press();
-          }
-
-          break;
-        }
-
-        case SDL_JOYBUTTONDOWN:
-        {
-          if (event.jbutton.button == 6 || event.jbutton.button == 19)
-          {
-            on_escape_press();
-          }
-
-          break;
-        }
-
-        default:
-        {
-          break;
-        }
-      }
-    }
+    process_endsequence_events();
   }
   else
   {
-    // Normal gameplay input handling
-    if (!Menu::current() && !game_pause)
-    {
-      Ticks::pause_stop();
-    }
-
-    SDL_Event event;
-    while (st_poll_event(&event))
-    {
-      if (Menu::current())
-      {
-        Menu::current()->event(event);
-        if (!Menu::current())
-        {
-          Ticks::pause_stop();
-        }
-      }
-      else
-      {
-        Player& tux = *world->get_tux();
-
-        switch (event.type)
-        {
-          case SDL_QUIT:
-          {
-            exit_status = ES_LEVEL_ABORT;
-            break;
-          }
-
-          case SDL_KEYDOWN:
-          {
-            if (!tux.key_event(event.key.keysym.sym, DOWN))
-            {
-              switch (event.key.keysym.sym)
-              {
-                case SDLK_ESCAPE:
-                {
-                  on_escape_press();
-                  break;
-                }
-
-                default:
-                {
-                  break;
-                }
-              }
-            }
-
-            break;
-          }
-
-          case SDL_KEYUP:
-          {
-            if (!tux.key_event(event.key.keysym.sym, UP))
-            {
-              switch (event.key.keysym.sym)
-              {
-                case SDLK_p:
-                {
-                  toggle_pause();
-                  break;
-                }
-
-                case SDLK_TAB:
-                {
-                  if (debug_mode)
-                  {
-                    tux.size = !tux.size;
-                    tux.base.height = (tux.size == BIG) ? (TILE_SIZE * 2) : TILE_SIZE;
-                  }
-
-                  break;
-                }
-
-                case SDLK_END:
-                {
-                  if (debug_mode)
-                  {
-                    player_status.distros += 50;
-                  }
-
-                  break;
-                }
-
-                case SDLK_DELETE:
-                {
-                  if (debug_mode)
-                  {
-                    tux.got_coffee = 1;
-                  }
-
-                  break;
-                }
-
-                case SDLK_INSERT:
-                {
-                  if (debug_mode)
-                  {
-                    tux.invincible_timer.start(TUX_INVINCIBLE_TIME);
-                  }
-
-                  break;
-                }
-
-                case SDLK_l:
-                {
-                  if (debug_mode)
-                  {
-                    --player_status.lives;
-                  }
-
-                  break;
-                }
-
-                case SDLK_s:
-                {
-                  if (debug_mode)
-                  {
-                    player_status.score += 1000;
-                  }
-
-                  break;
-                }
-
-                case SDLK_f:
-                {
-                  debug_fps = !debug_fps;
-                  break;
-                }
-
-                default:
-                {
-                  break;
-                }
-              }
-            }
-
-            break;
-          }
-
-#ifdef TSCONTROL
-          case SDL_MOUSEBUTTONDOWN:
-          {
-            tux.input.fire = DOWN;
-            break;
-          }
-
-          case SDL_MOUSEBUTTONUP:
-          {
-            tux.input.fire = UP;
-            break;
-          }
-
-          case SDL_MOUSEMOTION:
-          {
-            if (event.motion.y < old_mouse_y - 16)
-            {
-              tux.input.up = DOWN;
-            }
-            else if (event.motion.y > old_mouse_y + 2)
-            {
-              tux.input.up = UP;
-            }
-
-            old_mouse_y = event.motion.y;
-
-            // Stand still
-            if ((event.motion.x < (screen->w / 2) + (screen->w / 10)) &&
-                (event.motion.x > (screen->w / 2) - (screen->w / 10)))
-            {
-              tux.input.fire  =  UP;
-              tux.input.left  =  UP;
-              tux.input.right = UP;
-            }
-            // Run left
-            else if ((event.motion.x > 0) && (event.motion.x < (screen->w / 8)))
-            {
-              tux.input.fire  = DOWN;
-              tux.input.left  = DOWN;
-              tux.input.right = UP;
-            }
-            // Walk left
-            else if ((event.motion.x > (screen->w / 8)) && (event.motion.x < (screen->w / 2)))
-            {
-              tux.input.fire  = UP;
-              tux.input.right = UP;
-              tux.input.left  = DOWN;
-            }
-            // Walk right
-            else if ((event.motion.x > (screen->w / 2)) && (event.motion.x < (7 * screen->w / 8)))
-            {
-              tux.input.fire  = UP;
-              tux.input.right = DOWN;
-              tux.input.left  = UP;
-            }
-            // Run right
-            else if ((event.motion.x > (7 * screen->w / 8)) && (event.motion.x < screen->w))
-            {
-              tux.input.fire  = DOWN;
-              tux.input.right = DOWN;
-              tux.input.left  = UP;
-            }
-
-            break;
-          }
-#endif
-
-          case SDL_JOYHATMOTION:
-          {
-            // Apply rotation if needed
-            event.jhat.value = adjust_joystick_hat(event.jhat.value);
-
-            if (event.jhat.value == SDL_HAT_RIGHT || event.jhat.value == SDL_HAT_RIGHTUP)
-            {
-              tux.input.left  = UP;
-              tux.input.right = DOWN;
-            }
-
-            if (event.jhat.value == SDL_HAT_LEFT || event.jhat.value == SDL_HAT_LEFTUP)
-            {
-              tux.input.left  = DOWN;
-              tux.input.right = UP;
-            }
-
-            if (event.jhat.value == SDL_HAT_CENTERED)
-            {
-              tux.input.left  = UP;
-              tux.input.right = UP;
-            }
-
-            if (event.jhat.value == SDL_HAT_DOWN ||
-                event.jhat.value == SDL_HAT_LEFTDOWN ||
-                event.jhat.value == SDL_HAT_RIGHTDOWN)
-            {
-              tux.input.down  = DOWN;
-            }
-
-            if (event.jhat.value != SDL_HAT_DOWN &&
-                event.jhat.value != SDL_HAT_LEFTDOWN &&
-                event.jhat.value != SDL_HAT_RIGHTDOWN)
-            {
-              tux.input.down  = UP;
-            }
-
-            break;
-          }
-
-          case SDL_JOYAXISMOTION:
-          {
-            if (event.jaxis.axis == joystick_keymap.x_axis)
-            {
-              if (event.jaxis.value < -joystick_keymap.dead_zone)
-              {
-                tux.input.left  = DOWN;
-                tux.input.right = UP;
-              }
-              else if (event.jaxis.value > joystick_keymap.dead_zone)
-              {
-                tux.input.left  = UP;
-                tux.input.right = DOWN;
-              }
-              else
-              {
-                tux.input.left  = UP;
-                tux.input.right = UP;
-              }
-            }
-            else if (event.jaxis.axis == joystick_keymap.y_axis)
-            {
-              if (event.jaxis.value > joystick_keymap.dead_zone)
-              {
-                tux.input.down = DOWN;
-              }
-              else if (event.jaxis.value < -joystick_keymap.dead_zone)
-              {
-                tux.input.down = UP;
-              }
-              else
-              {
-                tux.input.down = UP;
-              }
-            }
-
-            break;
-          }
-
-          case SDL_JOYBUTTONDOWN:
-          {
-            int jump_btn1 = swap_x_and_o ? 1 : 0;
-            int fire_btn1 = swap_x_and_o ? 0 : 1;
-
-            if (event.jbutton.button == jump_btn1 || event.jbutton.button == 3)
-            {
-              tux.input.up = DOWN;
-            }
-            else if (event.jbutton.button == fire_btn1 || event.jbutton.button == 2)
-            {
-              tux.input.fire = DOWN;
-            }
-            else if (event.jbutton.button == 6)
-            {
-              on_escape_press();
-            }
-
-            break;
-          }
-
-          case SDL_JOYBUTTONUP:
-          {
-            int jump_btn1 = swap_x_and_o ? 1 : 0;
-            int fire_btn1 = swap_x_and_o ? 0 : 1;
-
-            if (event.jbutton.button == jump_btn1 || event.jbutton.button == 3)
-            {
-              tux.input.up = UP;
-            }
-            else if (event.jbutton.button == fire_btn1 || event.jbutton.button == 2)
-            {
-              tux.input.fire = UP;
-            }
-            // PAUSE on Wii Remote '+' (5)
-            else if (event.jbutton.button == 5)
-            {
-              toggle_pause();
-            }
-
-            break;
-          }
-
-          default:
-          {
-            break;
-          }
-        }
-      }
-    }
+    process_gameplay_events();
   }
 }
 
@@ -763,30 +778,6 @@ void GameSession::draw()
     mouse_cursor->draw();
   }
 
-#ifdef TSCONTROL
-  if (show_mouse)
-  {
-    MouseCursor::current()->draw();
-  }
-  int y = 4 * screen->h / 5;
-  int h = screen->h / 5;
-
-  // Run left
-  fillrect(0, y, screen->w / 8, h, 20, 20, 20, 60);
-
-  // Walk left
-  fillrect(screen->w / 8, y, screen->w / 2 - screen->w / 10 - screen->w / 8, h, 20, 20, 20, 40);
-
-  // Stand still
-  fillrect(screen->w / 2 - (screen->w / 10), y, screen->w / 5, h, 20, 20, 20, 20);
-
-  // Walk right
-  fillrect(screen->w / 2 + (screen->w / 10), y, screen->w / 2 - screen->w / 10 - screen->w / 8, h, 20, 20, 20, 40);
-
-  // Run right
-  fillrect(7 * screen->w / 8, y, screen->w / 8, h, 20, 20, 20, 60);
-#endif
-
   flipscreen();
 }
 
@@ -826,7 +817,7 @@ GameSession::ExitStatus GameSession::run()
 
   draw();
 
-  while (exit_status == ES_NONE)
+  while (exit_status == ES_NONE && !quit_requested)
   {
     /* Calculate the movement-factor */
     float frame_ratio = static_cast<float>(update_time - last_update_time) / static_cast<float>(FRAME_RATE);
@@ -971,26 +962,6 @@ void GameSession::drawstatus()
     white_text->draw("FPS", 460, 40 + offset_y, 1);
     gold_text->draw(buffer, 520, 40 + offset_y, 1);
   }
-}
-
-/**
- * Draws the result screen with the player's score and coins.
- */
-void GameSession::drawresultscreen()
-{
-  clearscreen(0, 0, 0); // Clear screen to prevent ghosting
-  get_level()->draw_bg();
-
-  blue_text->drawf("Result:", 0, 200, A_HMIDDLE, A_TOP, 1);
-
-  gold_text->drawf("SCORE: " + std::to_string(player_status.score), 0, 224, A_HMIDDLE, A_TOP, 1);
-
-  gold_text->drawf("COINS: " + std::to_string(player_status.distros), 0, 256, A_HMIDDLE, A_TOP, 1);
-
-  flipscreen();
-
-  SDL_Event event;
-  wait_for_event(event, 2000, 5000, true);
 }
 
 /**

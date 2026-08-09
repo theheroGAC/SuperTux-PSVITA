@@ -15,6 +15,7 @@
 #include <iostream>
 #include <cstdlib>
 #include <cmath>
+#include <iterator>
 #include <numbers>
 #include <string>
 #include <string_view>
@@ -104,7 +105,10 @@ BadGuyKind badguykind_from_string(std::string_view str)
   else
   {
     // Handle unknown bad guy types.
-    std::cerr << "Couldn't convert badguy: '" << str << "'" << std::endl;
+    if (verbose)
+    {
+      std::cerr << "Couldn't convert badguy: '" << str << "'" << std::endl;
+    }
     return BAD_SNOWBALL; // Default fallback
   }
 }
@@ -117,31 +121,33 @@ BadGuyKind badguykind_from_string(std::string_view str)
  */
 std::string badguykind_to_string(BadGuyKind kind)
 {
-  switch (kind)
+  // Indexed by BadGuyKind, so this table has to stay in the same order as the
+  // enum in badguy.hpp. Names that can appear in level files must round trip
+  // through badguykind_from_string.
+  static constexpr std::string_view kind_names[] =
   {
-    case BAD_JUMPY:
-      return "jumpy";
-    case BAD_MRICEBLOCK:
-      return "mriceblock";
-    case BAD_MRBOMB:
-      return "mrbomb";
-    case BAD_STALACTITE:
-      return "stalactite";
-    case BAD_FLAME:
-      return "flame";
-    case BAD_FISH:
-      return "fish";
-    case BAD_BOUNCINGSNOWBALL:
-      return "bouncingsnowball";
-    case BAD_FLYINGSNOWBALL:
-      return "flyingsnowball";
-    case BAD_SPIKY:
-      return "spiky";
-    case BAD_SNOWBALL:
-      return "snowball";
-    default:
-      return "snowball";
+    "mriceblock",        // BAD_MRICEBLOCK
+    "jumpy",             // BAD_JUMPY
+    "mrbomb",            // BAD_MRBOMB
+    "bomb",              // BAD_BOMB
+    "stalactite",        // BAD_STALACTITE
+    "flame",             // BAD_FLAME
+    "fish",              // BAD_FISH
+    "bouncingsnowball",  // BAD_BOUNCINGSNOWBALL
+    "flyingsnowball",    // BAD_FLYINGSNOWBALL
+    "spiky",             // BAD_SPIKY
+    "snowball"           // BAD_SNOWBALL
+  };
+  static_assert(std::size(kind_names) == NUM_BadGuyKinds,
+                "kind_names must have one entry per BadGuyKind");
+
+  const size_t index = static_cast<size_t>(kind);
+  if (index >= NUM_BadGuyKinds)
+  {
+    return "snowball"; // Default fallback for values outside the enum
   }
+
+  return std::string(kind_names[index]);
 }
 
 /**
@@ -229,8 +235,11 @@ BadGuy::BadGuy(float x, float y, BadGuyKind kind_, bool stay_on_platform_)
   // If we're in a solid tile at start, correct that now
   if (kind != BAD_FLAME && kind != BAD_FISH && collision_object_map(base))
   {
-    std::cerr << "Warning: BadGuy started in wall: kind: " << badguykind_to_string(kind)
-              << " pos: (" << base.x << ", " << base.y << ")" << std::endl;
+    if (verbose)
+    {
+      std::cerr << "Warning: BadGuy started in wall: kind: " << badguykind_to_string(kind)
+                << " pos: (" << base.x << ", " << base.y << ")" << std::endl;
+    }
     while (collision_object_map(base))
     {
       --base.y;
@@ -245,7 +254,6 @@ BadGuy::BadGuy(float x, float y, BadGuyKind kind_, bool stay_on_platform_)
  */
 void BadGuy::action_mriceblock(float frame_ratio)
 {
-  Player& tux = *World::current()->get_tux();
   static constexpr float KICK_VELOCITY = 3.5f;
 
   /* Move left/right: */
@@ -256,6 +264,7 @@ void BadGuy::action_mriceblock(float frame_ratio)
   }
   else // mode == HELD
   {
+    Player& tux = *World::current()->get_tux();
     // When held, the block's position is locked relative to Tux.
     dir = tux.dir;
     if (dir == RIGHT)
@@ -502,8 +511,6 @@ void BadGuy::action_jumpy(float frame_ratio)
     set_sprite(img_jumpy_left_up, img_jumpy_left_up);
   }
 
-  Player& tux = *World::current()->get_tux();
-
   static constexpr float JUMP_VELOCITY = 6.0f;
 
   // Jump when on ground
@@ -521,6 +528,7 @@ void BadGuy::action_jumpy(float frame_ratio)
   // Set direction based on Tux
   if (dying == DYING_NOT)
   {
+    Player& tux = *World::current()->get_tux();
     if (tux.base.x > base.x)
     {
       dir = RIGHT;
@@ -617,13 +625,13 @@ void BadGuy::action_bomb(float frame_ratio)
  */
 void BadGuy::action_stalactite(float frame_ratio)
 {
-  Player& tux = *World::current()->get_tux();
-
   static constexpr int SHAKE_TIME = 800;
   static constexpr int SHAKE_RANGE = 40;
 
   if (mode == NORMAL)
   {
+    Player& tux = *World::current()->get_tux();
+
     // Start shaking when Tux is below the stalactite and at least 40 pixels near
     if (tux.base.x + TILE_SIZE > base.x - SHAKE_RANGE && tux.base.x < base.x + TILE_SIZE + SHAKE_RANGE && tux.base.y + tux.base.height > base.y)
     {
@@ -1385,17 +1393,17 @@ void BadGuy::handleCollisionWithPlayer(Player* player)
  * This function determines the appropriate response based on the type of collision.
  * @param p_c_object Pointer to the colliding object or player.
  * @param c_object The type of colliding object (e.g., CO_BULLET, CO_PLAYER).
- * @param type The type of collision (e.g., COLLISION_BUMP, COLLISION_SQUISH).
+ * @param type_ The type of collision (e.g., COLLISION_BUMP, COLLISION_SQUISH).
  */
-void BadGuy::collision(void* p_c_object, int c_object, CollisionType type)
+void BadGuy::collision(void* p_c_object, int c_object, CollisionType type_)
 {
-  if (type == COLLISION_BUMP)
+  if (type_ == COLLISION_BUMP)
   {
     bump();
     return;
   }
 
-  if (type == COLLISION_SQUISH)
+  if (type_ == COLLISION_SQUISH)
   {
     Player* player = static_cast<Player*>(p_c_object);
     squish(player);

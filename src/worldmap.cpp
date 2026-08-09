@@ -23,6 +23,7 @@
 #include "lispreader.hpp"
 #include "gameloop.hpp"
 #include "setup.hpp"
+#include <memory>
 #include "worldmap.hpp"
 #include "resources.hpp"
 #include "level.hpp"
@@ -33,7 +34,45 @@
 #include "defines.hpp"
 
 namespace {
-  constexpr int DISPLAY_MAP_MESSAGE_TIME = 2800;
+  // Shared by the map flavour text and the savegame warning. Longer than
+  // the flavour text alone needs, so a failed save is readable.
+  constexpr int DISPLAY_MAP_MESSAGE_TIME = 4000;
+
+  /**
+   * Escapes a string so it can be written inside a quoted lisp string.
+   * Mirrors the reader in lispreader.cpp, which turns a backslash followed
+   * by 'n' or 't' into a newline or tab and a backslash followed by any
+   * other character into that character on its own.
+   * @param str The string to escape.
+   * @return The escaped string, safe to place between double quotes.
+   */
+  std::string escape_lisp_string(std::string_view str)
+  {
+    std::string result;
+    result.reserve(str.size());
+
+    for (const char c : str)
+    {
+      switch (c)
+      {
+        case '\\':
+        case '"':
+          result += '\\';
+          result += c;
+          break;
+        case '\n':
+          result += "\\n";
+          break;
+        case '\t':
+          result += "\\t";
+          break;
+        default:
+          result += c;
+          break;
+      }
+    }
+    return result;
+  }
 }
 
 namespace WorldMapNS
@@ -160,7 +199,7 @@ TileManager::TileManager()
         int id = 0;
         std::string filename = "<invalid>";
 
-        Tile* tile = new Tile;
+        auto tile = std::make_unique<Tile>();
         tile->north = true;
         tile->east = true;
         tile->south = true;
@@ -201,14 +240,14 @@ TileManager::TileManager()
           }
         }
 
-        tile->sprite = new Surface(datadir + "/images/worldmap/" + filename, true);
+        tile->sprite = std::make_unique<Surface>(datadir + "/images/worldmap/" + filename, true);
         if (id >= int(tiles.size()))
         {
           tiles.resize(id + 1);
         }
-        tiles[id] = tile;
+        tiles[id] = std::move(tile);
       }
-      else
+      else if (verbose)
       {
         puts("Unhandled symbol");
       }
@@ -227,10 +266,7 @@ TileManager::TileManager()
  */
 TileManager::~TileManager()
 {
-  for (std::vector<Tile*>::iterator i = tiles.begin(); i != tiles.end(); ++i)
-  {
-    delete *i;
-  }
+  // Tiles are owned by unique_ptr; nothing to do.
 }
 
 /**
@@ -241,21 +277,20 @@ TileManager::~TileManager()
 Tile* TileManager::get(int i)
 {
   assert(i >= 0 && i < int(tiles.size()));
-  return tiles[i];
+  return tiles[i].get();
 }
 
 /**
  * Constructor for Tux, initializes Tux with world map and sprites.
  * @param worldmap_ The WorldMap to associate with Tux.
  */
-Tux::Tux(WorldMap* worldmap_) : back_direction(D_NONE), worldmap(worldmap_)
+Tux::Tux(WorldMap* worldmap_) : back_direction(D_NONE), worldmap(worldmap_),
+  largetux_sprite(std::make_unique<Surface>(datadir + "/images/worldmap/tux.png", true)),
+  firetux_sprite(std::make_unique<Surface>(datadir + "/images/worldmap/firetux.png", true)),
+  smalltux_sprite(std::make_unique<Surface>(datadir + "/images/worldmap/smalltux.png", true)),
+  offset(0),
+  moving(false)
 {
-  largetux_sprite = new Surface(datadir + "/images/worldmap/tux.png", true);
-  firetux_sprite = new Surface(datadir + "/images/worldmap/firetux.png", true);
-  smalltux_sprite = new Surface(datadir + "/images/worldmap/smalltux.png", true);
-
-  offset = 0;
-  moving = false;
   tile_pos.x = worldmap->get_start_x();
   tile_pos.y = worldmap->get_start_y();
   direction = D_NONE;
@@ -275,9 +310,9 @@ Tux::~Tux()
  */
 void Tux::loadSprites()
 {
-  largetux_sprite = new Surface(datadir + "/images/worldmap/tux.png", true);
-  firetux_sprite = new Surface(datadir + "/images/worldmap/firetux.png", true);
-  smalltux_sprite = new Surface(datadir + "/images/worldmap/smalltux.png", true);
+  largetux_sprite = std::make_unique<Surface>(datadir + "/images/worldmap/tux.png", true);
+  firetux_sprite = std::make_unique<Surface>(datadir + "/images/worldmap/firetux.png", true);
+  smalltux_sprite = std::make_unique<Surface>(datadir + "/images/worldmap/smalltux.png", true);
 }
 
 /**
@@ -285,29 +320,19 @@ void Tux::loadSprites()
  */
 void Tux::deleteSprites()
 {
-  if (smalltux_sprite)
-  {
-    delete smalltux_sprite;
-  }
-  if (firetux_sprite)
-  {
-    delete firetux_sprite;
-  }
-  if (largetux_sprite)
-  {
-    delete largetux_sprite;
-  }
-  smalltux_sprite = 0;
-  firetux_sprite = 0;
-  largetux_sprite = 0;
+  // Explicitly release the sprite surfaces. Called before entering a level
+  // to free RAM during play; sprites are reloaded on return to the map.
+  smalltux_sprite.reset();
+  firetux_sprite.reset();
+  largetux_sprite.reset();
 }
 
 /**
  * Draws Tux at the given offset.
- * @param offset The point used to offset the drawing.
+ * @param offset_ The point used to offset the drawing.
  * @param batcher Optional RenderBatcher for OpenGL rendering.
  */
-void Tux::draw(const Point& offset, RenderBatcher* batcher)
+void Tux::draw(const Point& offset_, RenderBatcher* batcher)
 {
   Point pos = get_pos();
   Surface* sprite_to_draw = nullptr;
@@ -315,13 +340,13 @@ void Tux::draw(const Point& offset, RenderBatcher* batcher)
   switch (player_status.bonus)
   {
     case PlayerStatus::GROWUP_BONUS:
-      sprite_to_draw = largetux_sprite;
+      sprite_to_draw = largetux_sprite.get();
       break;
     case PlayerStatus::FLOWER_BONUS:
-      sprite_to_draw = firetux_sprite;
+      sprite_to_draw = firetux_sprite.get();
       break;
     case PlayerStatus::NO_BONUS:
-      sprite_to_draw = smalltux_sprite;
+      sprite_to_draw = smalltux_sprite.get();
       break;
   }
 
@@ -329,13 +354,13 @@ void Tux::draw(const Point& offset, RenderBatcher* batcher)
   {
     if (batcher)
     {
-      // Add to batcher if available. Hotspots are 0, 0.
-      batcher->add(sprite_to_draw, pos.x + offset.x, pos.y + offset.y - 10, 0, 0);
+      // Add to batcher if available. This sprite has no hotspot to apply.
+      batcher->add(sprite_to_draw, pos.x + offset_.x, pos.y + offset_.y - 10);
     }
     else
     {
       // Fallback to immediate draw
-      sprite_to_draw->draw(pos.x + offset.x, pos.y + offset.y - 10);
+      sprite_to_draw->draw(pos.x + offset_.x, pos.y + offset_.y - 10);
     }
   }
 }
@@ -519,27 +544,19 @@ Tile::Tile()
  */
 Tile::~Tile()
 {
-  delete sprite;
+  // sprite is owned by unique_ptr; nothing to do.
 }
 
 //---------------------------------------------------------------------------
 /**
  * WorldMap constructor, initializes the world map and loads initial resources.
  */
-WorldMap::WorldMap()
+WorldMap::WorldMap() : tux(nullptr), quit(false), level_sprite(nullptr),
+  width(20), height(SCREEN_HEIGHT_TILES), start_x(4), start_y(5),
+  tile_manager(std::make_unique<TileManager>()),
+  m_renderBatcher(std::make_unique<RenderBatcher>())
 {
   current_ = this;
-  tux = nullptr;
-  quit = false;
-  level_sprite = nullptr;
-  tile_manager = new TileManager();
-  m_renderBatcher = new RenderBatcher();
-
-  width = (int)(20);
-  height = (int)(SCREEN_HEIGHT_TILES);
-
-  start_x = int(4);
-  start_y = int(5);
 
   passive_message_timer.init(true);
 
@@ -560,9 +577,8 @@ WorldMap::WorldMap()
 WorldMap::~WorldMap()
 {
   if (current_ == this) current_ = nullptr;
-  delete tux;
-  delete tile_manager;
-  delete m_renderBatcher;
+  // tux, tile_manager, and m_renderBatcher are owned by unique_ptr and
+  // destroyed automatically after this body runs.
 
   deleteSprites();
   lisp_reset_pool(); // Free all memory used by the worldmap data
@@ -573,9 +589,9 @@ WorldMap::~WorldMap()
  */
 void WorldMap::loadSprites()
 {
-  leveldot_green = new Surface(datadir + "/images/worldmap/leveldot_green.png", true);
-  leveldot_red = new Surface(datadir + "/images/worldmap/leveldot_red.png", true);
-  leveldot_teleporter = new Surface(datadir + "/images/worldmap/teleporter.png", true);
+  leveldot_green = std::make_unique<Surface>(datadir + "/images/worldmap/leveldot_green.png", true);
+  leveldot_red = std::make_unique<Surface>(datadir + "/images/worldmap/leveldot_red.png", true);
+  leveldot_teleporter = std::make_unique<Surface>(datadir + "/images/worldmap/teleporter.png", true);
 }
 
 /**
@@ -583,21 +599,11 @@ void WorldMap::loadSprites()
  */
 void WorldMap::deleteSprites()
 {
-  if (leveldot_green)
-  {
-    delete leveldot_green;
-  }
-  if (leveldot_red)
-  {
-    delete leveldot_red;
-  }
-  if (leveldot_teleporter)
-  {
-    delete leveldot_teleporter;
-  }
-  leveldot_green = 0;
-  leveldot_red = 0;
-  leveldot_teleporter = 0;
+  // Explicitly release the level dot surfaces. Called before entering a
+  // level to free RAM during play; reloaded on return to the map.
+  leveldot_green.reset();
+  leveldot_red.reset();
+  leveldot_teleporter.reset();
 }
 
 /**
@@ -655,32 +661,20 @@ void WorldMap::load_map()
           {
             Level level;
             LispReader reader(lisp_cdr(level_element));
-            level.solved = false;
-
-            level.north = true;
-            level.east = true;
-            level.south = true;
-            level.west = true;
 
             reader.read_string("extro-filename", &level.extro_filename);
             reader.read_string("name", &level.name);
             reader.read_int("x", &level.x);
             reader.read_int("y", &level.y);
             reader.read_string("map-message", &level.display_map_message);
-            level.auto_path = true;
             reader.read_bool("auto-path", &level.auto_path);
-            level.passive_message = true;
             reader.read_bool("passive-message", &level.passive_message);
 
-            level.invisible_teleporter = false;
-            level.teleport_dest_x = level.teleport_dest_y = -1;
             reader.read_int("dest_x", &level.teleport_dest_x);
             reader.read_int("dest_y", &level.teleport_dest_y);
             reader.read_string("teleport-message", &level.teleport_message);
             reader.read_bool("invisible-teleporter", &level.invisible_teleporter);
 
-            level.apply_action_north = level.apply_action_south =
-                  level.apply_action_east = level.apply_action_west = true;
             reader.read_bool("apply-action-up", &level.apply_action_north);
             reader.read_bool("apply-action-down", &level.apply_action_south);
             reader.read_bool("apply-action-left", &level.apply_action_west);
@@ -709,24 +703,9 @@ void WorldMap::load_map()
     }
   }
 
-  tux = new Tux(this);
+  tux = std::make_unique<Tux>(this);
 }
 
-/**
- * Retrieves and sets the level's title from its file.
- * @param level The level whose title will be retrieved.
- */
-void WorldMap::get_level_title(Levels::pointer level)
-{
-  /** Get level's title */
-  level->title = "<no title>";
-
-  // Construct the full path to the level file.
-  std::string level_path = datadir + "/levels/" + level->name;
-
-  // Use the fast title reader instead of parsing the whole file.
-  level->title = ::Level::get_level_title_fast(level_path);
-}
 /**
  * Handles pressing the Escape key to show or hide the menu.
  */
@@ -772,39 +751,6 @@ void WorldMap::handleKeyboardInput(const SDL_Event& event)
     }
   }
 }
-
-#ifdef TSCONTROL
-/**
- * Handles mouse-specific input events.
- * @param event The SDL_Event for the mouse action.
- */
-void WorldMap::handleMouseInput(const SDL_Event& event)
-{
-  if (event.type == SDL_MOUSEBUTTONDOWN)
-  {
-    if (event.motion.y < screen->h / 4)
-    {
-      input_direction = D_NORTH;
-    }
-    else if (event.motion.y > 3 * screen->h / 4)
-    {
-      input_direction = D_SOUTH;
-    }
-    else if (event.motion.x < screen->w / 4)
-    {
-      input_direction = D_WEST;
-    }
-    else if (event.motion.x > 3 * screen->w / 4)
-    {
-      input_direction = D_EAST;
-    }
-    else
-    {
-      enter_level = true;
-    }
-  }
-}
-#endif
 
 /**
  * Handles joystick-specific input events.
@@ -901,7 +847,10 @@ void WorldMap::get_input()
       {
         case SDL_QUIT:
         {
-          st_abort("Received window close", "");
+          // A close request is a normal way to leave, not an error. Drop the
+          // map so display() returns, and quit_requested carries the request
+          // on out through the title screen.
+          quit_map();
           break;
         }
         case SDL_KEYDOWN:
@@ -909,13 +858,6 @@ void WorldMap::get_input()
           handleKeyboardInput(event);
           break;
         }
-#ifdef TSCONTROL
-        case SDL_MOUSEBUTTONDOWN:
-        {
-          handleMouseInput(event);
-          break;
-        }
-#endif
         case SDL_JOYAXISMOTION:
         case SDL_JOYHATMOTION:
         case SDL_JOYBUTTONDOWN:
@@ -1103,9 +1045,10 @@ void WorldMap::handleLevelCompletion(GameSession::ExitStatus result, bool coffee
         {
           tux->set_direction(dir);
         }
-#ifdef DEBUG
-        std::cout << "Walk to dir: " << dir << std::endl;
-#endif
+        if (verbose)
+        {
+          std::cout << "Walk to dir: " << dir << std::endl;
+        }
       }
 
       if (!level->extro_filename.empty())
@@ -1181,19 +1124,23 @@ void WorldMap::update(float delta)
     {
       if (level->x == tux->get_tile_pos().x && level->y == tux->get_tile_pos().y)
       {
-#ifdef DEBUG
-        std::cout << "Enter the current level: " << level->name << std::endl;
-#endif
+        if (verbose)
+        {
+          std::cout << "Enter the current level: " << level->name << std::endl;
+        }
         deleteSprites();
         tux->deleteSprites();
 
-        GameSession* session = new GameSession(datadir + "/levels/" + level->name, 1, ST_GL_LOAD_LEVEL_FILE);
+        auto session = std::make_unique<GameSession>(datadir + "/levels/" + level->name, 1, ST_GL_LOAD_LEVEL_FILE);
         loadsounds();
 
         GameSession::ExitStatus result = session->run();
         bool coffee = session->get_world()->get_tux()->got_coffee;
         bool big = session->get_world()->get_tux()->size == BIG;
-        delete session;
+
+        // Destroy the session HERE, not at end of scope: ~GameSession resets
+        // the global lisp pool, and code below may allocate from it.
+        session.reset();
 
         handleLevelCompletion(result, coffee, big, level);
 
@@ -1228,7 +1175,7 @@ void WorldMap::update(float delta)
         unloadsounds();  // FIXME: ideally should load/unload when loading world maps
       }
     }
-    else
+    else if (verbose)
     {
       std::cout << "Nothing to enter at: " << tux->get_tile_pos().x << ", " << tux->get_tile_pos().y << std::endl;
     }
@@ -1316,9 +1263,9 @@ int WorldMap::get_display_tile_id(int x, int y) const
 
 /**
  * Draws the world map at the specified offset.
- * @param offset The point used to offset drawing on the screen.
+ * @param offset_ The point used to offset drawing on the screen.
  */
-void WorldMap::draw(const Point& offset)
+void WorldMap::draw(const Point& offset_)
 {
   // Clear the screen to prevent ghosting (essential for OpenGL)
 #ifndef NOOPENGL
@@ -1334,8 +1281,8 @@ void WorldMap::draw(const Point& offset)
   }
 
   // Determine the range of tiles visible on the screen
-  int x_start = -offset.x / TILE_SIZE;
-  int y_start = -offset.y / TILE_SIZE;
+  int x_start = -offset_.x / TILE_SIZE;
+  int y_start = -offset_.y / TILE_SIZE;
   int x_end = x_start + (screen->w / TILE_SIZE) + 2;
   int y_end = y_start + (screen->h / TILE_SIZE) + 2;
 
@@ -1346,7 +1293,7 @@ void WorldMap::draw(const Point& offset)
   if (y_end > height) y_end = height;
 
   // Use the batcher if OpenGL is enabled
-  RenderBatcher* batcher = use_gl ? m_renderBatcher : nullptr;
+  RenderBatcher* batcher = use_gl ? m_renderBatcher.get() : nullptr;
 
   // Only draw the visible tiles with smart tile substitution
   for (int y = y_start; y < y_end; ++y)
@@ -1358,12 +1305,12 @@ void WorldMap::draw(const Point& offset)
       Tile* tile = tile_manager->get(display_tile_id);
       if (batcher)
       {
-        // Add to batcher. Hotspots are 0, 0.
-        batcher->add(tile->sprite, x * TILE_SIZE + offset.x, y * TILE_SIZE + offset.y, 0, 0);
+        // Add to batcher. This sprite has no hotspot to apply.
+        batcher->add(tile->sprite.get(), x * TILE_SIZE + offset_.x, y * TILE_SIZE + offset_.y);
       }
       else
       {
-        tile->sprite->draw(x * TILE_SIZE + offset.x, y * TILE_SIZE + offset.y);
+        tile->sprite->draw(x * TILE_SIZE + offset_.x, y * TILE_SIZE + offset_.y);
       }
     }
   }
@@ -1379,34 +1326,34 @@ void WorldMap::draw(const Point& offset)
       {
         if ((i->teleport_dest_x != -1) && !i->invisible_teleporter)
         {
-          dot_sprite = leveldot_teleporter;
+          dot_sprite = leveldot_teleporter.get();
         }
       }
       else if (i->solved)
       {
-        dot_sprite = leveldot_green;
+        dot_sprite = leveldot_green.get();
       }
       else
       {
-        dot_sprite = leveldot_red;
+        dot_sprite = leveldot_red.get();
       }
 
       if (dot_sprite)
       {
         if (batcher)
         {
-          // Add to batcher. Hotspots are 0, 0.
-          batcher->add(dot_sprite, i->x * TILE_SIZE + offset.x, i->y * TILE_SIZE + offset.y, 0, 0);
+          // Add to batcher. This sprite has no hotspot to apply.
+          batcher->add(dot_sprite, i->x * TILE_SIZE + offset_.x, i->y * TILE_SIZE + offset_.y);
         }
         else
         {
-          dot_sprite->draw(i->x * TILE_SIZE + offset.x, i->y * TILE_SIZE + offset.y);
+          dot_sprite->draw(i->x * TILE_SIZE + offset_.x, i->y * TILE_SIZE + offset_.y);
         }
       }
     }
   }
 
-  tux->draw(offset, batcher);
+  tux->draw(offset_, batcher);
 
   // Flush all batches at once for max efficiency
 #ifndef NOOPENGL
@@ -1517,22 +1464,12 @@ void WorldMap::renderScene()
 
   draw(offset);
 
-#ifndef TSCONTROL
   if (Menu::current())
   {
     Menu::current()->draw();
     mouse_cursor->draw();
   }
-#else
-  if (Menu::current())
-  {
-    Menu::current()->draw();
-  }
-  if (show_mouse)
-  {
-    mouse_cursor->draw();
-  }
-#endif
+
   flipscreen();
 }
 
@@ -1553,7 +1490,7 @@ void WorldMap::display()
   // Ensure scroll_x is 0 so RenderBatcher doesn't apply side-scroller offsets
   scroll_x = 0;
 
-  while (!quit)
+  while (!quit && !quit_requested)
   {
     // Use same delta calculation as gameloop (divide by FRAME_RATE)
     float delta = static_cast<float>(update_time - last_update_time) / static_cast<float>(FRAME_RATE);
@@ -1587,16 +1524,43 @@ void WorldMap::display()
 }
 
 /**
+ * Reports that a savegame could not be written.
+ * The player is told on the world map itself, since the Wii has no console
+ * once the game is drawing and a release build should behave the same way
+ * on both platforms. It reuses the map message line, so it displaces any
+ * flavour text that happens to be showing. The path is only interesting
+ * while debugging.
+ * @param filename The name of the file that could not be written.
+ */
+void WorldMap::report_save_failure(std::string_view filename)
+{
+  if (verbose)
+  {
+    std::cerr << "Warning: Could not write the savegame \"" << filename
+              << "\"" << std::endl;
+  }
+
+  passive_message = "Could not save your progress!";
+  passive_message_timer.start(DISPLAY_MAP_MESSAGE_TIME);
+}
+
+/**
  * Saves the game state to the specified file.
  * @param filename The name of the file to save the game state.
  */
 void WorldMap::savegame(std::string_view filename)
 {
-#ifdef DEBUG
-  std::cout << "savegame: " << filename << std::endl;
-#endif
+  if (verbose)
+  {
+    std::cout << "savegame: " << filename << std::endl;
+  }
   // ofstream requires const char* or std::string
   std::ofstream out(std::string(filename).c_str());
+  if (!out)
+  {
+    report_save_failure(filename);
+    return;
+  }
 
   int nb_solved_levels = 0;
   for (Levels::iterator i = levels.begin(); i != levels.end(); ++i)
@@ -1609,7 +1573,7 @@ void WorldMap::savegame(std::string_view filename)
 
   out << "(supertux-savegame\n"
       << "  (version 1)\n"
-      << "  (title  \"" << name << " - " << nb_solved_levels << "/" << levels.size() << "\")\n"
+      << "  (title  \"" << escape_lisp_string(name) << " - " << nb_solved_levels << "/" << levels.size() << "\")\n"
       << "  (lives   " << player_status.lives << ")\n"
       << "  (score   " << player_status.score << ")\n"
       << "  (distros " << player_status.distros << ")\n"
@@ -1622,13 +1586,20 @@ void WorldMap::savegame(std::string_view filename)
   {
     if (i->solved && !i->name.empty())
     {
-      out << "     (level (name \"" << i->name << "\")\n"
+      out << "     (level (name \"" << escape_lisp_string(i->name) << "\")\n"
           << "            (solved #t))\n";
     }
   }
 
   out << "   )\n"
       << " )\n\n;; EOF ;;" << std::endl;
+
+  // A full or write-protected card fails here rather than at open time.
+  out.close();
+  if (!out)
+  {
+    report_save_failure(filename);
+  }
 }
 
 /**
@@ -1637,27 +1608,29 @@ void WorldMap::savegame(std::string_view filename)
  */
 void WorldMap::loadgame(std::string_view filename)
 {
-#ifdef DEBUG
-  std::cout << "loadgame: " << filename << std::endl;
-#endif
+  if (verbose)
+  {
+    std::cout << "loadgame: " << filename << std::endl;
+  }
   savegame_file = filename;
 
-  lisp_object_t* savegame = lisp_read_from_file(filename);
-  if (!savegame)
+  lisp_object_t* savegame_obj = lisp_read_from_file(filename);
+  if (!savegame_obj)
   {
     // Reset player state for a new game
-#ifdef DEBUG
-    std::cout << "WorldMap:loadgame: File not found: " << filename << std::endl;
-#endif
+    if (verbose)
+    {
+      std::cout << "WorldMap:loadgame: File not found: " << filename << std::endl;
+    }
     player_status.reset();
     return;
   }
 
-  lisp_object_t* cur = savegame;
+  lisp_object_t* cur = savegame_obj;
 
   if (strcmp(lisp_symbol(lisp_car(cur)), "supertux-savegame") != 0)
   {
-    lisp_free(savegame);
+    lisp_free(savegame_obj);
     return;
   }
 
@@ -1701,16 +1674,16 @@ void WorldMap::loadgame(std::string_view filename)
 
       if (strcmp(lisp_symbol(sym), "level") == 0)
       {
-        std::string name;
+        std::string level_name;
         bool solved = false;
 
         LispReader level_reader(data);
-        level_reader.read_string("name", &name);
+        level_reader.read_string("name", &level_name);
         level_reader.read_bool("solved", &solved);
 
         for (Levels::iterator i = levels.begin(); i != levels.end(); ++i)
         {
-          if (name == i->name)
+          if (level_name == i->name)
           {
             i->solved = solved;
           }
@@ -1721,7 +1694,7 @@ void WorldMap::loadgame(std::string_view filename)
     }
   }
 
-  lisp_free(savegame);
+  lisp_free(savegame_obj);
 }
 
 /**

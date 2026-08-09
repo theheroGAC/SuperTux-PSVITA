@@ -104,19 +104,20 @@ private:
 public:
   BadGuy(float x, float y, BadGuyKind kind, bool stay_on_platform);
 
-  void action(float frame_ratio);
+  void action(float frame_ratio) override;
   void updatePhysics(float deltaTime, bool performCollision);
   void draw() override;
   void draw(RenderBatcher* batcher);
-  std::string type()
+  std::string type() override
   {
     return "BadGuy";
   };
 
-  void explode(BadGuy* badguy);
+  /** Takes its subject as an argument rather than acting on this one. */
+  static void explode(BadGuy* badguy);
 
   void collision(void* p_c_object, int c_object,
-                 CollisionType type = COLLISION_NORMAL);
+                 CollisionType type_ = COLLISION_NORMAL);
 
   /** this functions tries to kill the badguy and lets him fall off the
    * screen. Some badguys like the flame might ignore this.

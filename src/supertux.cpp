@@ -31,6 +31,12 @@
   #include <fat.h>
 #endif
 
+#ifdef __PS3__
+  #include <sys/process.h>
+  #include <unistd.h>
+  SYS_PROCESS_PARAM(1001, 0x200000)
+#endif
+
 // Loading screen surface (shown while heavy resources load on startup)
 std::unique_ptr<Surface> loading_surf;
 
@@ -47,6 +53,9 @@ std::unique_ptr<Surface> loading_surf;
  */
 int main(int argc, char ** argv)
 {
+#ifdef __PS3__
+  chdir("/dev_hdd0/game/SUPERTUX1/USRDIR");
+#endif
 
 #ifdef __WII__
   // Wii-specific setup for FAT library and USB disk handling.
@@ -61,6 +70,9 @@ int main(int argc, char ** argv)
   }
 
 #endif
+
+  // Claim the power button before anything can press it
+  st_power_setup();
 
   // Setup directory paths and load configuration
   st_directory_setup();
@@ -106,12 +118,14 @@ int main(int argc, char ** argv)
   st_general_free();
   TileManager::destroy_instance();
 
-#ifdef DEBUG
   Surface::debug_check();  // Now this check should report an empty list.
-#endif
 
   // Perform the final, low-level system shutdown.
   st_shutdown();
+
+  // If the player pressed a power button, the console goes off here rather
+  // than returning to the loader. The config has been saved by this point.
+  st_power_off_if_requested();
 
   return 0;
 }

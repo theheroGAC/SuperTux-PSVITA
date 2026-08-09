@@ -50,9 +50,6 @@ class GameSession
     unsigned int update_time;
     int pause_menu_frame;
     int debug_fps;
-#ifdef TSCONTROL
-    int old_mouse_y;
-#endif
 
     /** If true the end_sequence will be played, user input will be
         ignored while doing that */
@@ -116,16 +113,24 @@ class GameSession
     void check_end_conditions();
     void start_timers();
     void process_events();
+    void process_endsequence_events();
+    void process_gameplay_events();
+    void handle_endsequence_event(const SDL_Event& event);
+    void handle_gameplay_event(const SDL_Event& event, Player& tux);
+    bool handle_keyboard_event(const SDL_Event& event, Player& tux);
+    bool handle_joystick_event(const SDL_Event& event, Player& tux);
+    void handle_key_up(SDL_Keycode key, Player& tux);
+    void handle_joystick_button_down(Uint8 button, Player& tux);
+    void handle_joystick_button_up(Uint8 button, Player& tux);
 
     void levelintro();
     void drawstatus();
     void drawendscreen();
-    void drawresultscreen(void);
 
   private:
     void on_escape_press();
     void toggle_pause();
-    void process_menu();
+    static void process_menu();
 };
 
 std::string slotinfo(int slot);

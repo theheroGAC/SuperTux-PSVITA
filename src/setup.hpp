@@ -23,8 +23,6 @@
 class Menu;
 
 bool faccessible(const char *filename); // Checks if the file is accessible
-bool fcreatedir(const char* relative_dir); // Creates a directory relative to the current working directory
-bool fwriteable(const char *filename); // Checks if the file is writable
 FILE * opendata(const char * filename, const char * mode); // Opens a data file
 
 StringList dsubdirs(const char* rel_path, const char* expected_file); // Retrieves a list of subdirectories with the expected file
@@ -41,6 +39,8 @@ void st_video_reinit(void); // Reinitializes video when switching modes
 void st_toggle_fullscreen(void); // Toggles fullscreen without recreating window
 void st_audio_setup(void); // Sets up the audio system
 void st_joystick_setup(void); // Sets up the joystick system
+void st_power_setup(void); // Takes the Wii power button over from SDL
+void st_power_off_if_requested(void); // Powers the console off if the player asked; does not return if so
 void st_shutdown(void); // Shuts down the game and frees resources
 void st_menu(void); // Displays the main menu
 [[noreturn]] void st_abort(const std::string& reason, const std::string& details); // Aborts the game with a reason and details

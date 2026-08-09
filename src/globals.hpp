@@ -28,16 +28,10 @@ extern std::string datadir;
 
 struct JoystickKeymap
 {
-  int a_button{0};
-  int b_button{1};
-  int start_button{2};
-
   int x_axis{0};
   int y_axis{1};
 
   int dead_zone{8192};
-
-  JoystickKeymap();
 };
 
 extern JoystickKeymap joystick_keymap;
@@ -57,10 +51,17 @@ extern bool use_joystick;
 extern bool use_fullscreen;
 extern bool debug_mode;
 extern bool show_fps;
-extern bool show_mouse;
 extern bool tv_overscan_enabled;
 extern bool swap_x_and_o;
 extern int offset_y;
+
+/** Developer console output, compiled in for debug builds only.
+    Unrelated to debug_mode above, which unlocks cheats. */
+#ifdef DEBUG
+  inline constexpr bool verbose = true;
+#else
+  inline constexpr bool verbose = false;
+#endif
 
 /** The number of the joystick that will be use in the game */
 extern int joystick_num;
@@ -83,7 +84,13 @@ int wait_for_event(SDL_Event& event, unsigned int min_delay = 0, unsigned int ma
 
 void draw_player_hud();
 
-void st_wii_input_init();
+/** Set once the player asks for the game to close: the window's close
+    button on desktop, or the reset or power button on Wii. Every game loop
+    checks it so the request unwinds all the way out of main() instead of
+    being handled locally by whichever loop happened to see the event.
+    Volatile because the Wii power button sets it from an interrupt. */
+extern volatile bool quit_requested;
+
 int st_poll_event(SDL_Event *event);
 
 #endif /* SUPERTUX_GLOBALS_H */

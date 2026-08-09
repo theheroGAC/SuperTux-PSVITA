@@ -41,7 +41,6 @@ enum OptionsMenuIDs
   MNID_SOUND,
   MNID_MUSIC,
   MNID_SHOWFPS,
-  MNID_SHOWMOUSE,
   MNID_TV_OVERSCAN
 };
 
@@ -155,7 +154,7 @@ private:
 
   void process_options_menu();
   void draw_item(int index, int menu_width, int menu_height);
-  void get_controlfield_key_into_input(MenuItem* item);
+  static void get_controlfield_key_into_input(MenuItem* item_);
 
 public:
   // Static functions for menu navigation
@@ -202,7 +201,7 @@ public:
   void set_pos(int x, int y, float rw = 0, float rh = 0);
 
   /** translate a SDL_Event into a menu_action */
-  void event(SDL_Event& event);
+  void event(SDL_Event& event_);
 
   int get_width() const;
   int get_height() const;
@@ -220,7 +219,6 @@ extern Menu* game_menu;
 extern Menu* worldmap_menu;
 extern Menu* options_menu;
 extern Menu* options_keys_menu;
-extern Menu* options_joystick_menu;
 extern Menu* load_game_menu;
 extern Menu* save_game_menu;
 #pragma endregion

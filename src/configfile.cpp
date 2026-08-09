@@ -84,7 +84,7 @@ void loadconfig()
   // Parse the config values
   LispReader reader(lisp_cdr(root_obj));
 
-#if defined(__WII__) || defined(__VITA__)
+#if defined(__WII__) || defined(__VITA__) || defined(__PS3__)
   use_fullscreen = true;
   bool dummy_fullscreen_setting;
   reader.read_bool("fullscreen", &dummy_fullscreen_setting);
@@ -101,9 +101,6 @@ void loadconfig()
 #ifdef NOOPENGL
   // When OpenGL is disabled at compile time, always force SDL mode.
   use_gl = false;
-  // We read the "video" setting to advance the parser but ignore its value.
-  std::string dummy_video_setting;
-  reader.read_string("video", &dummy_video_setting);
 #else
   // When OpenGL is available, read the user's preference from the config.
   // Only update use_gl if the tag is actually present in the file.
@@ -121,9 +118,6 @@ void loadconfig()
 
   reader.read_int("joystick-x", &joystick_keymap.x_axis);
   reader.read_int("joystick-y", &joystick_keymap.y_axis);
-  reader.read_int("joystick-a", &joystick_keymap.a_button);
-  reader.read_int("joystick-b", &joystick_keymap.b_button);
-  reader.read_int("joystick-start", &joystick_keymap.start_button);
   reader.read_int("joystick-deadzone", &joystick_keymap.dead_zone);
 
   reader.read_int("keyboard-jump", &keymap.jump);
@@ -164,9 +158,6 @@ void saveconfig()
 
     fprintf(config, "\t(joystick-x %d)\n", joystick_keymap.x_axis);
     fprintf(config, "\t(joystick-y %d)\n", joystick_keymap.y_axis);
-    fprintf(config, "\t(joystick-a %d)\n", joystick_keymap.a_button);
-    fprintf(config, "\t(joystick-b %d)\n", joystick_keymap.b_button);
-    fprintf(config, "\t(joystick-start %d)\n", joystick_keymap.start_button);
     fprintf(config, "\t(joystick-deadzone %d)\n", joystick_keymap.dead_zone);
 
     fprintf(config, "\t(keyboard-jump %d)\n", keymap.jump);

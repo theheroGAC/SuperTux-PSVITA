@@ -104,7 +104,7 @@ void MusicManager::free_music(MusicResource* music)
   {
     if (&i->second == music)
     {
-      i = musics.erase(i); // Erase and get the next valid iterator
+      musics.erase(i); // Erase and exit
       return; // Exit immediately
     }
     else
@@ -173,7 +173,9 @@ void MusicManager::enable_music(bool enable)
   music_enabled = enable;
   if (!music_enabled) {
     Mix_HaltMusic();  // Stop music if disabling
-  } else {
+  } else if (current_music) {
+    // halt_music() leaves current_music null, so arriving here with no track
+    // loaded is an ordinary state and not something to dereference.
     Mix_PlayMusic(current_music->music, -1);  // Resume or start music if enabling
   }
 }

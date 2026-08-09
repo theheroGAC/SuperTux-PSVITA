@@ -31,7 +31,6 @@ void st_menu(void)
   main_menu = new Menu();
   options_menu = new Menu();
   options_keys_menu = new Menu();
-  options_joystick_menu = new Menu();
   load_game_menu = new Menu();
   save_game_menu = new Menu();
   game_menu = new Menu();
@@ -57,7 +56,7 @@ void st_menu(void)
   options_menu->additem(MN_DEACTIVE, "OpenGL (not supported)", use_gl, 0, MNID_OPENGL);
 #endif
 #endif
-#if defined(__WII__) || defined(__VITA__)
+#if defined(__WII__) || defined(__VITA__) || defined(__PS3__)
   // For consoles, always enable fullscreen and grey out the option
   options_menu->additem(MN_DEACTIVE, "Fullscreen (no window mode)", true, 0, MNID_FULLSCREEN);
 #else
@@ -78,9 +77,6 @@ void st_menu(void)
     options_menu->additem(MN_DEACTIVE, "Music      ", false, 0, MNID_MUSIC);
   }
 
-#ifdef TSCONTROL
-  options_menu->additem(MN_TOGGLE, "Show Mouse ", show_mouse, 0, MNID_SHOWMOUSE);
-#endif
   options_menu->additem(MN_TOGGLE, "Show FPS   ", show_fps, 0, MNID_SHOWFPS);
   options_menu->additem(MN_TOGGLE, "TV Overscan", tv_overscan_enabled, 0, MNID_TV_OVERSCAN);
   options_menu->additem(MN_GOTO, "Keyboard Setup", 0, options_keys_menu);
@@ -97,20 +93,6 @@ void st_menu(void)
   options_keys_menu->additem(MN_CONTROLFIELD, "Power/Run", 0, 0, 0, &keymap.fire);
   options_keys_menu->additem(MN_HL, "", 0, nullptr);
   options_keys_menu->additem(MN_BACK, "Back", 0, nullptr);
-
-  if (use_joystick)
-  {
-    options_joystick_menu->additem(MN_LABEL, "Joystick Setup", 0, nullptr);
-    options_joystick_menu->additem(MN_HL, "", 0, nullptr);
-    options_joystick_menu->additem(MN_CONTROLFIELD, "X axis", 0, 0, 0, &joystick_keymap.x_axis);
-    options_joystick_menu->additem(MN_CONTROLFIELD, "Y axis", 0, 0, 0, &joystick_keymap.y_axis);
-    options_joystick_menu->additem(MN_CONTROLFIELD, "A button", 0, 0, 0, &joystick_keymap.a_button);
-    options_joystick_menu->additem(MN_CONTROLFIELD, "B button", 0, 0, 0, &joystick_keymap.b_button);
-    options_joystick_menu->additem(MN_CONTROLFIELD, "Start", 0, 0, 0, &joystick_keymap.start_button);
-    options_joystick_menu->additem(MN_CONTROLFIELD, "DeadZone", 0, 0, 0, &joystick_keymap.dead_zone);
-    options_joystick_menu->additem(MN_HL, "", 0, nullptr);
-    options_joystick_menu->additem(MN_BACK, "Back", 0, nullptr);
-  }
 
   load_game_menu->additem(MN_LABEL, "Start Game", 0, nullptr);
   load_game_menu->additem(MN_HL, "", 0, nullptr);

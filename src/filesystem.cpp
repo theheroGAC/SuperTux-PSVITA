@@ -13,7 +13,6 @@
 #include <limits.h>
 #include <unistd.h>
 #include <filesystem>
-#include <fstream>
 #include <iostream>
 #include <cstdlib>
 #include <cstring>
@@ -50,38 +49,6 @@ bool faccessible(const char* filename)
 }
 
 /**
- * Checks if the given file is writable.
- * @param filename Path to the file.
- * @return true if the file is writable, false otherwise.
- */
-bool fwriteable(const char* filename)
-{
-  std::ofstream file(filename, std::ios::app);
-  return file.is_open();
-}
-
-/**
- * Attempts to create a directory in the SuperTux home directory first
- * and if it fails, it tries to create the directory in the base directory.
- * @param relative_dir The relative path of the directory to be created.
- * @return true if the directory was successfully created or already exists, false otherwise.
- */
-bool fcreatedir(const char* relative_dir)
-{
-  fs::path path = fs::path(st_dir) / relative_dir;
-
-  if (!fs::create_directories(path))
-  {
-    path = fs::path(datadir) / relative_dir;
-    if (!fs::create_directories(path))
-    {
-      return false;
-    }
-  }
-  return true;
-}
-
-/**
  * Opens a file located in the SuperTux data directory.
  * @param rel_filename Relative path of the file within the data directory.
  * @param mode Mode in which the file should be opened (read/write).
@@ -93,9 +60,9 @@ FILE* opendata(const char* rel_filename, const char* mode)
 
   FILE* fi = fopen(filename.c_str(), mode);
 
-  if (fi == nullptr)
+  if (fi == nullptr && verbose)
   {
-    std::cerr << "Warning: Unable to open the file \"" << filename << "\" ";
+    std::cerr << "Warning: Unable to open the file \"" << filename.string() << "\" ";
     if (strcmp(mode, "r") == 0)
     {
       std::cerr << "for read!!!\n";
@@ -127,10 +94,10 @@ static void process_directory(const std::string& base_path, const std::string& r
   // Construct the full path
   fs::path path = fs::path(base_path) / rel_path;
 
-#ifdef DEBUG
-  // Debug output: print the full path being accessed in debug mode
-  std::cerr << "Accessing directory: " << path << std::endl;
-#endif
+  if (verbose)
+  {
+    std::cerr << "Accessing directory: " << path << std::endl;
+  }
 
   try
   {
@@ -234,9 +201,10 @@ void st_directory_setup(void)
   fs::create_directories(st_save_dir.c_str());
   fs::create_directories((st_dir + "/levels").c_str());
 
-  #ifdef DEBUG
-  printf("Wii Setup: Root=%s\nData=%s\nSave=%s\n", st_dir.c_str(), datadir.c_str(), st_save_dir.c_str());
-  #endif
+  if (verbose)
+  {
+    printf("Wii Setup: Root=%s\nData=%s\nSave=%s\n", st_dir.c_str(), datadir.c_str(), st_save_dir.c_str());
+  }
 }
 
 #elif defined(__VITA__)
@@ -256,7 +224,162 @@ void st_directory_setup(void)
   fs::create_directories((st_dir + "/levels").c_str());
 }
 
-#else // #ifndef __WII__ and #ifndef __VITA__
+#elif defined(__PS3__)
+
+/**
+ * Set SuperTux configuration and save directories (PlayStation 3 specific)
+ */
+void st_directory_setup(void)
+{
+  st_dir = "/dev_hdd0/game/SUPERTUX1/USRDIR";
+  datadir = st_dir + "/data";
+  st_save_dir = st_dir + "/save";
+
+  // Ensure writable directories exist on the PS3 hard drive using POSIX mkdir
+  mkdir(st_dir.c_str(), 0777);
+  mkdir(st_save_dir.c_str(), 0777);
+  mkdir((st_dir + "/levels").c_str(), 0777);
+}
+
+#else // #ifndef __WII__, #ifndef __VITA__ and #ifndef __PS3__
+
+/**
+ * Reads $HOME, canonicalized to strip any path-traversal sequences (e.g. "..")
+ * before it is used to build st_dir. realpath() only resolves paths that
+ * already exist, so a $HOME that has yet to be created falls back to the raw
+ * value and create_directories() makes it later. An unset $HOME gives ".".
+ * @return The home directory to build st_dir from.
+ */
+static std::string resolve_home_directory()
+{
+  const char* home_env = getenv("HOME");
+
+  if (home_env == nullptr)
+  {
+    return ".";
+  }
+
+  char* resolved_home = realpath(home_env, nullptr);
+  std::string home = (resolved_home != nullptr) ? resolved_home : home_env;
+  free(resolved_home);
+
+  return home;
+}
+
+#ifndef WIN32
+
+/**
+ * Asks the operating system where this executable lives.
+ * @param buffer Receives the path, always NUL terminated on success.
+ * @param size The size of buffer in bytes.
+ * @return true if the path was retrieved. A platform with no supported way of
+ *         asking always returns false, and the caller falls back to
+ *         DATA_PREFIX.
+ */
+static bool get_executable_path(char* buffer, size_t size)
+{
+#if defined(__linux__)
+  // readlink does not NUL-terminate; we do so explicitly.
+  ssize_t len = readlink("/proc/self/exe", buffer, size - 1);
+  if (len > 0)
+  {
+    buffer[len] = '\0';
+    return true;
+  }
+#elif defined(__APPLE__)
+  uint32_t buffer_size = static_cast<uint32_t>(size);
+  if (_NSGetExecutablePath(buffer, &buffer_size) == 0)
+  {
+    return true;
+  }
+#elif defined(__FreeBSD__)
+  int mib[4] = {CTL_KERN, KERN_PROC, KERN_PROC_PATHNAME, -1};
+  size_t len = size;
+  if (sysctl(mib, 4, buffer, &len, NULL, 0) == 0)
+  {
+    return true;
+  }
+#else
+  (void)buffer;
+  (void)size;
+#endif
+
+  return false;
+}
+
+/**
+ * Looks for the game data in the usual places around the executable.
+ * @param exedir The directory holding the executable.
+ * @return The first candidate that exists and is a directory, or DATA_PREFIX
+ *         when none of them do.
+ */
+static std::string find_datadir_near(const fs::path& exedir)
+{
+  const std::vector<fs::path> search_paths = {
+      exedir / "data",
+      exedir / "../data",
+      exedir / "../share/supertux",
+  };
+
+  for (const auto& path : search_paths)
+  {
+    struct stat st;
+    if (stat(path.c_str(), &st) == 0 && S_ISDIR(st.st_mode))
+    {
+      try
+      {
+        return fs::canonical(path).string();
+      }
+      catch (const fs::filesystem_error&)
+      {
+        // The path was invalid or unreadable, so we just try the next path.
+        continue;
+      }
+    }
+  }
+
+  return DATA_PREFIX;
+}
+
+/**
+ * Works out where the game data lives, starting from the executable's own
+ * location. Falls back to DATA_PREFIX at every step that can fail.
+ */
+static void detect_datadir()
+{
+  char exe_file[PATH_MAX] = {0};
+
+  if (!get_executable_path(exe_file, sizeof(exe_file)))
+  {
+    if (verbose)
+    {
+      puts("Couldn't determine executable path, using default: " DATA_PREFIX);
+    }
+    datadir = DATA_PREFIX;
+    return;
+  }
+
+  /* Use NULL destination so realpath allocates the buffer to avoid
+   * potential overflow if the resolved path exceeds PATH_MAX. */
+  char* resolved_raw = realpath(exe_file, nullptr);
+
+  if (resolved_raw == nullptr)
+  {
+    if (verbose)
+    {
+      puts("Couldn't resolve executable path, using default: " DATA_PREFIX);
+    }
+    datadir = DATA_PREFIX;
+    return;
+  }
+
+  const std::string resolved_path(resolved_raw);
+  free(resolved_raw);
+
+  datadir = find_datadir_near(fs::path(resolved_path).parent_path());
+}
+
+#endif // ifndef WIN32
 
 /**
  * Set SuperTux configuration and save directories (non HBC Wii)
@@ -266,13 +389,7 @@ void st_directory_setup(void)
  */
 void st_directory_setup(void)
 {
-  const char* home;
-
-  /* Get home directory from $HOME variable or use current directory (".") */
-  const char* home_env = getenv("HOME");
-  home = (home_env != nullptr) ? home_env : ".";
-
-  st_dir = std::string(home) + "/.supertux";
+  st_dir = resolve_home_directory() + "/.supertux";
 
   /* Remove .supertux config-file from old SuperTux versions */
   if (faccessible(st_dir.c_str()))
@@ -292,97 +409,39 @@ void st_directory_setup(void)
   // Handle datadir detection logic (Linux, macOS, BSD)
   if (datadir.empty())
   {
-    char exe_file[PATH_MAX] = {0};
-    bool path_retrieved = false;
-
-#if defined(__linux__)
-    // readlink does not NUL-terminate; we do so explicitly.
-    ssize_t len = readlink("/proc/self/exe", exe_file, sizeof(exe_file) - 1);
-    if (len > 0)
-    {
-      exe_file[len] = '\0';
-      path_retrieved = true;
-    }
-#elif defined(__APPLE__)
-    uint32_t size = sizeof(exe_file);
-    if (_NSGetExecutablePath(exe_file, &size) == 0)
-    {
-      path_retrieved = true;
-    }
-#elif defined(__FreeBSD__)
-    int mib[4] = {CTL_KERN, KERN_PROC, KERN_PROC_PATHNAME, -1};
-    size_t len = sizeof(exe_file);
-    if (sysctl(mib, 4, exe_file, &len, NULL, 0) == 0)
-    {
-      path_retrieved = true;
-    }
-#endif
-
-    if (path_retrieved)
-    {
-      /* Use NULL destination so realpath allocates the buffer to avoid
-       * potential overflow if the resolved path exceeds PATH_MAX. */
-      char* resolved_raw = realpath(exe_file, nullptr);
-      if (resolved_raw == nullptr)
-      {
-        puts("Couldn't resolve executable path, using default: " DATA_PREFIX);
-        datadir = DATA_PREFIX;
-      }
-      else
-      {
-        std::string resolved_path(resolved_raw);
-        free(resolved_raw);
-        fs::path exedir = fs::path(resolved_path).parent_path();
-        const std::vector<fs::path> search_paths = {
-            exedir / "data",
-            exedir / "../data",
-            exedir / "../share/supertux",
-        };
-
-        bool found = false;
-        for (const auto& path : search_paths)
-        {
-          struct stat st;
-          if (stat(path.c_str(), &st) == 0 && S_ISDIR(st.st_mode))
-          {
-            try
-            {
-              datadir = fs::canonical(path).string();
-              found = true;
-              break;
-            }
-            catch (const fs::filesystem_error&)
-            {
-              // The path was invalid or unreadable, so we just try the next path.
-              continue;
-            }
-          }
-        }
-        if (!found)
-        {
-          datadir = DATA_PREFIX;
-        }
-      }
-    }
-    else
-    {
-      puts("Couldn't determine executable path, using default: " DATA_PREFIX);
-      datadir = DATA_PREFIX;
-    }
+    detect_datadir();
   }
 #else // #ifdef WIN32
   // For Windows, use default data path
   datadir = "data";
 #endif
 
-#ifdef DEBUG
-  // Print the paths for verification in debug mode
-  printf("st_dir: %s\n", st_dir.c_str());
-  printf("st_save_dir: %s\n", st_save_dir.c_str());
-  printf("Datadir: %s\n", datadir.c_str());
-#endif
+  if (verbose)
+  {
+    printf("st_dir: %s\n", st_dir.c_str());
+    printf("st_save_dir: %s\n", st_save_dir.c_str());
+    printf("Datadir: %s\n", datadir.c_str());
+  }
 }
 
 #endif // def __WII__
+
+#ifdef __PS3__
+#include <sys/types.h>
+extern "C" {
+  int symlink(const char *target, const char *linkpath) {
+    return -1;
+  }
+  int readlink(const char *pathname, char *buf, size_t bufsiz) {
+    return -1;
+  }
+  long pathconf(const char *path, int name) {
+    return -1;
+  }
+  int fchmod(int fd, mode_t mode) {
+    return -1;
+  }
+}
+#endif
 
 // EOF
