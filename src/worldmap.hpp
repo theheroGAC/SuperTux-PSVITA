@@ -13,6 +13,7 @@
 #ifndef SUPERTUX_WORLDMAP_H
 #define SUPERTUX_WORLDMAP_H
 
+#include <memory>
 #include <vector>
 #include <string>
 #include <string_view>
@@ -66,7 +67,7 @@ public:
   Tile();
   ~Tile();
 
-  Surface* sprite;
+  std::unique_ptr<Surface> sprite;
 
   // Directions in which Tux is allowed to walk from this tile
   bool north;
@@ -88,7 +89,7 @@ public:
 class TileManager
 {
 private:
-  typedef std::vector<Tile*> Tiles;
+  typedef std::vector<std::unique_ptr<Tile>> Tiles;
   Tiles tiles;
 
 public:
@@ -112,9 +113,9 @@ public:
   Direction back_direction;
 private:
   WorldMap* worldmap;
-  Surface* largetux_sprite;
-  Surface* firetux_sprite;
-  Surface* smalltux_sprite;
+  std::unique_ptr<Surface> largetux_sprite;
+  std::unique_ptr<Surface> firetux_sprite;
+  std::unique_ptr<Surface> smalltux_sprite;
 
   Direction input_direction;
   Direction direction;
@@ -132,7 +133,7 @@ public:
   void loadSprites();
   void deleteSprites();
 
-  void draw(const Point& offset, RenderBatcher* batcher);
+  void draw(const Point& offset_, RenderBatcher* batcher);
   void update(float delta);
 
   void set_direction(Direction d)
@@ -167,11 +168,14 @@ public:
 public:
   struct Level
   {
-    int x;
-    int y;
+    /** Tile position on the map. A level whose entry gives no coordinates
+        keeps -1 and is simply never stood on, rather than matching a tile
+        by accident. */
+    int x = -1;
+    int y = -1;
     std::string name;
     std::string title;
-    bool solved;
+    bool solved = false;
 
     /** Filename of the extro text to show once the level is
         successfully completed */
@@ -179,28 +183,28 @@ public:
 
     /** Message to show in the Map during a certain time */
     std::string display_map_message;
-    bool passive_message;
+    bool passive_message = true;
 
     /** Teleporters */
-    int teleport_dest_x;
-    int teleport_dest_y;
+    int teleport_dest_x = -1;
+    int teleport_dest_y = -1;
     std::string teleport_message;
-    bool invisible_teleporter;
+    bool invisible_teleporter = false;
 
     /** If false, disables the auto walking after finishing a level */
-    bool auto_path;
+    bool auto_path = true;
 
     /** Only applies actions (ie. map messages) when going to that direction */
-    bool apply_action_north;
-    bool apply_action_east;
-    bool apply_action_south;
-    bool apply_action_west;
+    bool apply_action_north = true;
+    bool apply_action_east = true;
+    bool apply_action_south = true;
+    bool apply_action_west = true;
 
     // Directions which are walkable from this level
-    bool north;
-    bool east;
-    bool south;
-    bool west;
+    bool north = true;
+    bool east = true;
+    bool south = true;
+    bool west = true;
   };
 
   /** Variables to deal with the passive map messages */
@@ -229,9 +233,9 @@ public:
   void update(float delta);
 
   /** Draw one frame */
-  void draw(const Point& offset);
+  void draw(const Point& offset_);
 
-  Point get_next_tile(Point pos, Direction direction);
+  static Point get_next_tile(Point pos, Direction direction);
   Tile* at(Point pos);
   WorldMap::Level* at_level();
 
@@ -278,28 +282,27 @@ private:
   // Refactored input handlers
   void handleKeyboardInput(const SDL_Event& event);
   void handleJoystickInput(const SDL_Event& event);
-#ifdef TSCONTROL
-  void handleMouseInput(const SDL_Event& event);
-#endif
 
   // Refactored update logic
   void handleLevelCompletion(GameSession::ExitStatus result, bool coffee, bool big, Level* level);
 
-  void get_level_title(Levels::pointer level);
   void draw_status();
-  void on_escape_press();
+  static void on_escape_press();
+
+  // Tells the player a savegame could not be written
+  void report_save_failure(std::string_view filename);
 
   // Smart tile substitution for snow tiles
   // Added const
   int get_display_tile_id(int x, int y) const;
 
-  Tux* tux;
+  std::unique_ptr<Tux> tux;
   bool quit;
 
-  Surface* level_sprite;
-  Surface* leveldot_green;
-  Surface* leveldot_red;
-  Surface* leveldot_teleporter;
+  std::unique_ptr<Surface> level_sprite;
+  std::unique_ptr<Surface> leveldot_green;
+  std::unique_ptr<Surface> leveldot_red;
+  std::unique_ptr<Surface> leveldot_teleporter;
 
   std::string name;
   std::string music;
@@ -312,7 +315,7 @@ private:
   int start_x;
   int start_y;
 
-  TileManager* tile_manager;
+  std::unique_ptr<TileManager> tile_manager;
 
   Levels levels;
 
@@ -325,7 +328,7 @@ private:
   std::string savegame_file;
   std::string map_file;
 
-  RenderBatcher* m_renderBatcher;
+  std::unique_ptr<RenderBatcher> m_renderBatcher;
 
 private:
   static WorldMap* current_;
